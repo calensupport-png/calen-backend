@@ -7,6 +7,7 @@ import { validateEnvironment } from './config/env.validation';
 import { DatabaseModule } from './database/database.module';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { OnboardingModule } from './onboarding/onboarding.module';
+import { OrgDashboardModule } from './org-dashboard/org-dashboard.module';
 import { OrgOnboardingModule } from './org-onboarding/org-onboarding.module';
 
 const shouldConnectDatabase = process.env.NODE_ENV !== 'test';
@@ -20,7 +21,13 @@ const shouldConnectDatabase = process.env.NODE_ENV !== 'test';
       validate: validateEnvironment,
     }),
     ...(shouldConnectDatabase
-      ? [DatabaseModule, AuthModule, OnboardingModule, OrgOnboardingModule]
+      ? [
+          DatabaseModule,
+          AuthModule,
+          OnboardingModule,
+          OrgOnboardingModule,
+          OrgDashboardModule,
+        ]
       : []),
     ...(shouldConnectDatabase ? [DashboardModule] : []),
   ],

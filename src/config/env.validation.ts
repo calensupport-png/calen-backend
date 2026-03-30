@@ -14,6 +14,13 @@ export interface EnvironmentVariables {
   AUTH_EMAIL_FROM_ADDRESS?: string;
   PLATFORM_EMAIL_FROM_ADDRESS?: string;
   EMAIL_REPLY_TO?: string;
+  TRUELAYER_CLIENT_ID?: string;
+  TRUELAYER_CLIENT_SECRET?: string;
+  TRUELAYER_REDIRECT_URI?: string;
+  TRUELAYER_AUTH_BASE_URL?: string;
+  TRUELAYER_API_BASE_URL?: string;
+  TRUELAYER_SCOPES?: string;
+  TRUELAYER_PROVIDER_COUNTRY_CODE?: string;
 }
 
 const DEFAULTS: EnvironmentVariables = {
@@ -27,6 +34,10 @@ const DEFAULTS: EnvironmentVariables = {
   APP_BASE_URL: 'http://localhost:8080',
   AUTH_EMAIL_FROM_ADDRESS: 'CALEN <noreply@joincalen.com>',
   PLATFORM_EMAIL_FROM_ADDRESS: 'Phoebe from Calen <noreply@joincalen.com>',
+  TRUELAYER_AUTH_BASE_URL: 'https://auth.truelayer.com',
+  TRUELAYER_API_BASE_URL: 'https://api.truelayer.com',
+  TRUELAYER_SCOPES:
+    'info accounts balance transactions cards direct_debits standing_orders offline_access',
 };
 
 function parsePort(value: unknown): number {
@@ -99,6 +110,27 @@ export function validateEnvironment(
     ).trim(),
     EMAIL_REPLY_TO: config.EMAIL_REPLY_TO
       ? String(config.EMAIL_REPLY_TO).trim()
+      : undefined,
+    TRUELAYER_CLIENT_ID: config.TRUELAYER_CLIENT_ID
+      ? String(config.TRUELAYER_CLIENT_ID).trim()
+      : undefined,
+    TRUELAYER_CLIENT_SECRET: config.TRUELAYER_CLIENT_SECRET
+      ? String(config.TRUELAYER_CLIENT_SECRET).trim()
+      : undefined,
+    TRUELAYER_REDIRECT_URI: config.TRUELAYER_REDIRECT_URI
+      ? String(config.TRUELAYER_REDIRECT_URI).trim()
+      : undefined,
+    TRUELAYER_AUTH_BASE_URL: String(
+      config.TRUELAYER_AUTH_BASE_URL ?? DEFAULTS.TRUELAYER_AUTH_BASE_URL,
+    ).trim(),
+    TRUELAYER_API_BASE_URL: String(
+      config.TRUELAYER_API_BASE_URL ?? DEFAULTS.TRUELAYER_API_BASE_URL,
+    ).trim(),
+    TRUELAYER_SCOPES: String(
+      config.TRUELAYER_SCOPES ?? DEFAULTS.TRUELAYER_SCOPES,
+    ).trim(),
+    TRUELAYER_PROVIDER_COUNTRY_CODE: config.TRUELAYER_PROVIDER_COUNTRY_CODE
+      ? String(config.TRUELAYER_PROVIDER_COUNTRY_CODE).trim().toUpperCase()
       : undefined,
   };
 }

@@ -21,6 +21,14 @@ interface ReferralInviteEmailInput {
   referralCode: string;
 }
 
+interface OrganizationTeamInviteEmailInput {
+  to: string;
+  inviterName: string;
+  organizationName: string;
+  role: string;
+  acceptInvitationUrl: string;
+}
+
 interface EmailVerificationInput {
   to: string;
   firstName?: string;
@@ -132,6 +140,43 @@ export class EmailService {
     await this.sendEmail({
       to: input.to,
       subject: `${input.inviterName} invited you to CALEN`,
+      html,
+      senderType: 'platform',
+    });
+  }
+
+  async sendOrganizationTeamInviteEmail(
+    input: OrganizationTeamInviteEmailInput,
+  ): Promise<void> {
+    const roleLabel = input.role
+      .replace(/_/g, ' ')
+      .replace(/\b\w/g, (character) => character.toUpperCase());
+
+    const html = renderTransactionalEmailTemplate({
+      previewText: `${input.inviterName} added you to ${input.organizationName}'s CALEN workspace.`,
+      greeting: 'Hello,',
+      title: 'You were added to a CALEN organisation workspace',
+      intro: `${input.inviterName} added ${input.to} to ${input.organizationName} as ${roleLabel}.`,
+      body: [
+        'This invitation notifies you that your organisation is setting up access inside CALEN.',
+        'Use the link below to open the organisation sign-in page with your invited email address. If you do not yet have login credentials, please coordinate with your workspace admin or reply to this email.',
+      ],
+      highlights: [
+        `Organisation: ${input.organizationName}`,
+        `Assigned role: ${roleLabel}`,
+        `Invited email: ${input.to}`,
+      ],
+      cta: {
+        label: 'Accept Invitation',
+        href: input.acceptInvitationUrl,
+      },
+      finePrint:
+        'This invitation link lets you set your password and activate your CALEN organisation access securely.',
+    });
+
+    await this.sendEmail({
+      to: input.to,
+      subject: `${input.organizationName} added you to CALEN`,
       html,
       senderType: 'platform',
     });

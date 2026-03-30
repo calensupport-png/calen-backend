@@ -1,7 +1,9 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
+  Param,
   Patch,
   Post,
   Req,
@@ -83,6 +85,19 @@ export class OrgOnboardingController {
     @Body() dto: CreateOrgInvitationDto,
   ) {
     return this.orgOnboardingService.createInvitation(req.user, dto);
+  }
+
+  @Delete('org/me/invitations/:invitationId')
+  @ApiOperation({ summary: 'Delete a pending organization team invitation' })
+  @ApiOkResponse()
+  deleteInvitation(
+    @Req() req: AuthenticatedRequest,
+    @Param('invitationId') invitationId: string,
+  ) {
+    return this.orgOnboardingService.deleteInvitation(
+      req.user,
+      invitationId,
+    );
   }
 
   @Get('org/me/team')

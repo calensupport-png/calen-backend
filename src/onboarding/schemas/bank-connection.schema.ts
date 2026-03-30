@@ -24,6 +24,21 @@ export class BankConnection {
   @Prop({ trim: true })
   accountType?: string;
 
+  @Prop({ trim: true })
+  providerAccountId?: string;
+
+  @Prop({ trim: true })
+  providerLogoUri?: string;
+
+  @Prop({ trim: true, default: 'account' })
+  resourceType?: string;
+
+  @Prop({ type: [String], default: [] })
+  scopes?: string[];
+
+  @Prop({ type: Object, default: null })
+  dataSnapshot?: Record<string, unknown> | null;
+
   @Prop({ default: 'connected' })
   status: string;
 

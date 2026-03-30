@@ -1,4 +1,6 @@
 import {
+  BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -7,8 +9,13 @@ import { InjectModel } from '@nestjs/mongoose';
 import { randomBytes } from 'crypto';
 import { Model, Types } from 'mongoose';
 import { AccountsService } from '../accounts/accounts.service';
+import { AuthService } from '../auth/auth.service';
+import { PasswordService } from '../auth/password.service';
 import { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
+import { AcceptOrgInvitationDto } from './dto/accept-org-invitation.dto';
 import { AccountType } from '../common/enums/account-type.enum';
+import { AccountRole } from '../common/enums/account-role.enum';
+import { UserStatus } from '../common/enums/user-status.enum';
 import { EmailService } from '../email/email.service';
 import { OrganizationsService } from '../organizations/organizations.service';
 import { CreateOrgInvitationDto } from './dto/create-org-invitation.dto';
@@ -30,6 +37,8 @@ export class OrgOnboardingService {
   constructor(
     private readonly organizationsService: OrganizationsService,
     private readonly accountsService: AccountsService,
+    private readonly authService: AuthService,
+    private readonly passwordService: PasswordService,
     private readonly emailService: EmailService,
     @InjectModel(OrganizationInvitation.name)
     private readonly invitationModel: Model<OrganizationInvitationDocument>,
@@ -120,6 +129,7 @@ export class OrgOnboardingService {
 
   async createInvitation(user: AuthenticatedUser, dto: CreateOrgInvitationDto) {
     const organization = await this.getCurrentOrganization(user);
+    const inviter = await this.accountsService.findUserByIdOrThrow(user.id);
     const invitation = await this.invitationModel.create({
       organizationId: organization._id as Types.ObjectId,
       invitedByUserId: new Types.ObjectId(user.id),
@@ -130,12 +140,58 @@ export class OrgOnboardingService {
       status: 'pending',
       expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
     });
+
+    await this.emailService.sendOrganizationTeamInviteEmail({
+      to: invitation.email,
+      inviterName: inviter.displayName || inviter.firstName || 'Your administrator',
+      organizationName: organization.name,
+      role: invitation.role,
+      acceptInvitationUrl: `${process.env.APP_BASE_URL?.trim() || 'http://localhost:8080'}/org/invite/${encodeURIComponent(
+        invitation.token,
+      )}?email=${encodeURIComponent(
+        invitation.email,
+      )}`,
+    });
+
     await this.maybeCompleteOnboarding(user, organization, {
       invitationCountDelta: 1,
     });
 
     return {
       invitation: this.serializeInvitation(invitation),
+    };
+  }
+
+  async deleteInvitation(
+    user: AuthenticatedUser,
+    invitationId: string,
+  ) {
+    const organization = await this.getCurrentOrganization(user);
+    const invitation = await this.invitationModel
+      .findOne({
+        _id: new Types.ObjectId(invitationId),
+        organizationId: organization._id,
+      })
+      .exec();
+
+    if (!invitation) {
+      throw new NotFoundException({
+        code: 'ORG_INVITATION_NOT_FOUND',
+        message: 'That organization invitation could not be found.',
+      });
+    }
+
+    if (invitation.status !== 'pending') {
+      throw new BadRequestException({
+        code: 'ORG_INVITATION_NOT_PENDING',
+        message: 'Only pending organization invitations can be removed.',
+      });
+    }
+
+    await this.invitationModel.deleteOne({ _id: invitation._id });
+
+    return {
+      message: 'Organization invitation removed.',
     };
   }
 
@@ -234,6 +290,79 @@ export class OrgOnboardingService {
     };
   }
 
+  async getPublicInvitation(token: string) {
+    const invitation = await this.getValidInvitationByToken(token);
+    const organization = await this.organizationsService.findByIdOrThrow(
+      String(invitation.organizationId),
+    );
+
+    return {
+      invitation: {
+        email: invitation.email,
+        role: invitation.role,
+        status: invitation.status,
+        expiresAt: invitation.expiresAt,
+        organization: {
+          id: String(organization._id),
+          name: organization.name,
+          slug: organization.slug,
+        },
+      },
+    };
+  }
+
+  async acceptInvitation(
+    token: string,
+    dto: AcceptOrgInvitationDto,
+    requestMetadata: {
+      requestId?: string;
+      ipAddress?: string;
+      userAgent?: string;
+    },
+  ) {
+    const invitation = await this.getValidInvitationByToken(token);
+
+    const existingAccount = await this.accountsService.findUserByEmail(
+      invitation.email,
+    );
+    if (existingAccount) {
+      throw new ConflictException({
+        code: 'INVITED_EMAIL_ALREADY_REGISTERED',
+        message:
+          'An account already exists for this invitation email. Sign in instead or ask your admin for help.',
+      });
+    }
+
+    const organization = await this.organizationsService.findByIdOrThrow(
+      String(invitation.organizationId),
+    );
+    const { firstName, lastName } = this.splitFullName(dto.fullName);
+    const roleLabel = this.humanizeRole(invitation.role);
+    const user = await this.accountsService.createUser({
+      email: invitation.email,
+      passwordHash: await this.passwordService.hash(dto.password),
+      displayName: dto.fullName.trim(),
+      firstName,
+      lastName,
+      jobTitle: roleLabel,
+      roles: [AccountRole.ORGANISATION],
+      accountType: AccountType.ORGANISATION,
+      organizationId: organization._id as Types.ObjectId,
+      status: UserStatus.ACTIVE,
+      emailVerifiedAt: new Date(),
+    });
+
+    await this.invitationModel.updateOne(
+      { _id: invitation._id },
+      {
+        status: 'accepted',
+        acceptedAt: new Date(),
+      },
+    );
+
+    return this.authService.createAuthenticatedSession(user, requestMetadata);
+  }
+
   private async getCurrentOrganization(user: AuthenticatedUser) {
     this.assertOrganizationUser(user);
     const account = await this.accountsService.findUserByIdOrThrow(user.id);
@@ -251,6 +380,54 @@ export class OrgOnboardingService {
     );
 
     return organization;
+  }
+
+  private async getValidInvitationByToken(
+    token: string,
+  ): Promise<OrganizationInvitationDocument> {
+    const invitation = await this.invitationModel.findOne({ token }).exec();
+
+    if (!invitation) {
+      throw new NotFoundException({
+        code: 'ORG_INVITATION_NOT_FOUND',
+        message: 'This organisation invitation is invalid or no longer exists.',
+      });
+    }
+
+    if (invitation.status !== 'pending') {
+      throw new BadRequestException({
+        code: 'ORG_INVITATION_ALREADY_USED',
+        message: 'This organisation invitation has already been used.',
+      });
+    }
+
+    if (invitation.expiresAt.getTime() <= Date.now()) {
+      throw new BadRequestException({
+        code: 'ORG_INVITATION_EXPIRED',
+        message: 'This organisation invitation has expired.',
+      });
+    }
+
+    return invitation;
+  }
+
+  private splitFullName(fullName: string): {
+    firstName: string;
+    lastName?: string;
+  } {
+    const trimmed = fullName.trim().replace(/\s+/g, ' ');
+    const [firstName, ...rest] = trimmed.split(' ');
+
+    return {
+      firstName,
+      lastName: rest.length > 0 ? rest.join(' ') : undefined,
+    };
+  }
+
+  private humanizeRole(role: string): string {
+    return role
+      .replace(/_/g, ' ')
+      .replace(/\b\w/g, (character) => character.toUpperCase());
   }
 
   private assertOrganizationUser(user: AuthenticatedUser): void {

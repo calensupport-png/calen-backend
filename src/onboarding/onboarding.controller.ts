@@ -19,6 +19,7 @@ import {
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { AuthenticatedRequest } from '../auth/interfaces/authenticated-request.interface';
 import { CreateBankConnectionDto } from './dto/bank-connection.dto';
+import { CompleteBankConnectionDto } from './dto/complete-bank-connection.dto';
 import { UpdateEmploymentProfileDto } from './dto/employment-profile.dto';
 import { UpdateFinancialProfileDto } from './dto/financial-profile.dto';
 import { UploadIdentityDocumentsDto } from './dto/identity-documents.dto';
@@ -106,7 +107,7 @@ export class OnboardingController {
   }
 
   @Post('me/bank-connections')
-  @ApiOperation({ summary: 'Create a mock bank connection record' })
+  @ApiOperation({ summary: 'Create a TrueLayer bank auth link' })
   @ApiBody({ type: CreateBankConnectionDto })
   @ApiCreatedResponse()
   createBankConnection(
@@ -116,11 +117,32 @@ export class OnboardingController {
     return this.onboardingService.createBankConnection(req.user, dto);
   }
 
+  @Post('me/bank-connections/exchange')
+  @ApiOperation({ summary: 'Exchange a TrueLayer auth code and save bank connections' })
+  @ApiBody({ type: CompleteBankConnectionDto })
+  @ApiCreatedResponse()
+  completeBankConnection(
+    @Req() req: AuthenticatedRequest,
+    @Body() dto: CompleteBankConnectionDto,
+  ) {
+    return this.onboardingService.completeBankConnection(req.user, dto);
+  }
+
   @Get('me/bank-connections')
   @ApiOperation({ summary: 'List current user bank connections' })
   @ApiOkResponse()
   getBankConnections(@Req() req: AuthenticatedRequest) {
     return this.onboardingService.getBankConnections(req.user);
+  }
+
+  @Get('me/bank-connections/:id/details')
+  @ApiOperation({ summary: 'Get detailed TrueLayer data for one bank connection resource' })
+  @ApiOkResponse()
+  getBankConnectionDetails(
+    @Req() req: AuthenticatedRequest,
+    @Param('id') id: string,
+  ) {
+    return this.onboardingService.getBankConnectionDetails(req.user, id);
   }
 
   @Post('me/trust-contacts')

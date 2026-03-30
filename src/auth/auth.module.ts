@@ -40,6 +40,6 @@ import { Session, SessionSchema } from './schemas/session.schema';
   ],
   controllers: [AuthController],
   providers: [AuthService, PasswordService, JwtAuthGuard],
-  exports: [JwtAuthGuard, JwtModule],
+  exports: [AuthService, PasswordService, JwtAuthGuard, JwtModule],
 })
 export class AuthModule {}

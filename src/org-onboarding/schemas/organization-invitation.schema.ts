@@ -43,6 +43,9 @@ export class OrganizationInvitation {
   @Prop({ required: true })
   expiresAt: Date;
 
+  @Prop()
+  acceptedAt?: Date;
+
   createdAt?: Date;
 
   updatedAt?: Date;

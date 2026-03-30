@@ -14,6 +14,7 @@ import {
 } from './schemas/organization-verification.schema';
 import { OrgOnboardingController } from './org-onboarding.controller';
 import { OrgOnboardingService } from './org-onboarding.service';
+import { PublicOrgInvitationController } from './public-org-invitation.controller';
 
 @Module({
   imports: [
@@ -32,7 +33,7 @@ import { OrgOnboardingService } from './org-onboarding.service';
       },
     ]),
   ],
-  controllers: [OrgOnboardingController],
+  controllers: [OrgOnboardingController, PublicOrgInvitationController],
   providers: [OrgOnboardingService],
 })
 export class OrgOnboardingModule {}

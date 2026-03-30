@@ -41,6 +41,14 @@ export class OnboardingState {
 
   @Prop()
   welcomeEmailSentAt?: Date;
+
+  @Prop({ type: Object, default: null })
+  bankAuthState?: {
+    state: string;
+    bankId?: string;
+    returnPath?: string;
+    createdAt?: Date;
+  } | null;
 }
 
 export const OnboardingStateSchema =

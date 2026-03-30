@@ -6,6 +6,9 @@ class AuthUserOrganizationDto {
 
   @ApiProperty({ example: 'Calen Inc' })
   name?: string;
+
+  @ApiProperty({ example: '66bf0a1d5a5b7d1a0f3e7b20', required: false, nullable: true })
+  primaryAdminUserId?: string | null;
 }
 
 export class AuthUserDto {

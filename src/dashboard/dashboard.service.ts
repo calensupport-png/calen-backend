@@ -50,6 +50,10 @@ import {
   UserSettingsDocument,
 } from './schemas/user-settings.schema';
 
+const ACTIVE_BANK_CONNECTION_FILTER = {
+  provider: { $ne: 'mock-open-banking' },
+} as const;
+
 @Injectable()
 export class DashboardService {
   constructor(
@@ -93,7 +97,10 @@ export class DashboardService {
       referrals,
     ] = await Promise.all([
       this.onboardingStateModel.findOne({ userId: userObjectId }),
-      this.bankConnectionModel.find({ userId: userObjectId }),
+      this.bankConnectionModel.find({
+        userId: userObjectId,
+        ...ACTIVE_BANK_CONNECTION_FILTER,
+      }),
       this.trustContactModel.find({ userId: userObjectId }),
       this.ensureNotifications(user.id),
       this.ensureSettings(user.id),
@@ -109,6 +116,7 @@ export class DashboardService {
     const connectedTrustCount = trustContacts.filter(
       (contact) => contact.status === 'request_sent',
     ).length;
+    const connectedBankCount = this.countDistinctBankConnections(bankConnections);
 
     return {
       dashboard: {
@@ -117,7 +125,7 @@ export class DashboardService {
           onboardingStatus: profile?.onboardingStatus ?? 'not_started',
           score: score?.score ?? null,
           scoreBand: score?.band ?? null,
-          connectedBanks: bankConnections.length,
+          connectedBanks: connectedBankCount,
           trustedContacts: trustContacts.length,
           trustRequestsSent: connectedTrustCount,
           unreadNotifications: unreadCount,
@@ -227,9 +235,7 @@ export class DashboardService {
     const onboardingState = await this.onboardingStateModel.findOne({
       userId: userObjectId,
     });
-    const bankConnections = await this.bankConnectionModel.countDocuments({
-      userId: userObjectId,
-    });
+    const bankConnections = await this.getActiveBankConnectionCount(userObjectId);
     const score = await this.getCurrentScore(user);
 
     const insights = [
@@ -719,9 +725,7 @@ export class DashboardService {
       return null;
     }
 
-    const bankConnections = await this.bankConnectionModel.countDocuments({
-      userId: userObjectId,
-    });
+    const bankConnections = await this.getActiveBankConnectionCount(userObjectId);
     const trustContacts = await this.trustContactModel.countDocuments({
       userId: userObjectId,
     });
@@ -759,6 +763,38 @@ export class DashboardService {
     return this.scoreSnapshotModel
       .findOne({ userId: userObjectId })
       .sort({ generatedAt: -1 });
+  }
+
+  private async getActiveBankConnectionCount(userObjectId: Types.ObjectId) {
+    const bankConnections = await this.bankConnectionModel
+      .find({
+        userId: userObjectId,
+        ...ACTIVE_BANK_CONNECTION_FILTER,
+      })
+      .select('bankId bankName provider');
+
+    return this.countDistinctBankConnections(bankConnections);
+  }
+
+  private countDistinctBankConnections(
+    bankConnections: Array<{
+      bankId?: string | null;
+      bankName?: string | null;
+      provider?: string | null;
+    }>,
+  ) {
+    const uniqueConnections = new Set<string>();
+
+    for (const bankConnection of bankConnections) {
+      const provider = bankConnection.provider?.trim() || 'open-banking';
+      const bankId = bankConnection.bankId?.trim();
+      const bankName = bankConnection.bankName?.trim().toLowerCase();
+      uniqueConnections.add(
+        `${provider}::${bankId || bankName || 'connected-bank'}`,
+      );
+    }
+
+    return uniqueConnections.size;
   }
 
   private resolveScoreBand(score: number): string {

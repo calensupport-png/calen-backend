@@ -7,6 +7,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { AccountRole } from '../common/enums/account-role.enum';
 import { AccountType } from '../common/enums/account-type.enum';
+import { UserStatus } from '../common/enums/user-status.enum';
 import { generateShareId } from '../common/utils/share-id.util';
 import { Profile, ProfileDocument } from './schemas/profile.schema';
 import { User, UserDocument } from './schemas/user.schema';
@@ -23,6 +24,8 @@ interface CreateUserInput {
   roles: AccountRole[];
   accountType: AccountType;
   organizationId?: Types.ObjectId;
+  status?: UserStatus;
+  emailVerifiedAt?: Date;
 }
 
 @Injectable()
@@ -152,6 +155,25 @@ export class AccountsService {
       .populate('organizationId')
       .populate('profileId')
       .sort({ createdAt: 1 })
+      .exec();
+  }
+
+  async findIndividualByShareId(shareId: string): Promise<UserDocument | null> {
+    const normalizedShareId = shareId.trim().toUpperCase();
+    const profile = await this.profileModel
+      .findOne({
+        shareId: normalizedShareId,
+        accountType: AccountType.INDIVIDUAL,
+      })
+      .exec();
+
+    if (!profile) {
+      return null;
+    }
+
+    return this.userModel
+      .findById(profile.userId)
+      .populate('profileId')
       .exec();
   }
 }

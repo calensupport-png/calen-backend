@@ -7,6 +7,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { AccountsService } from '../accounts/accounts.service';
+import { mongooseRefId } from '../common/utils/mongoose-ref.util';
 import { AccountRole } from '../common/enums/account-role.enum';
 import { AccountType } from '../common/enums/account-type.enum';
 import { AuthenticatedRequest } from './interfaces/authenticated-request.interface';
@@ -52,9 +53,7 @@ export class JwtAuthGuard implements CanActivate {
         email: user.email,
         accountType: user.accountType,
         roles: user.roles,
-        organizationId: user.organizationId
-          ? String(user.organizationId)
-          : undefined,
+        organizationId: mongooseRefId(user.organizationId),
         sessionId: payload.sid,
       };
 

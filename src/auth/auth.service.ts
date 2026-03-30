@@ -14,6 +14,7 @@ import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { AccountRole } from '../common/enums/account-role.enum';
 import { AccountType } from '../common/enums/account-type.enum';
 import { EmailService } from '../email/email.service';
+import { mongooseRefId } from '../common/utils/mongoose-ref.util';
 import { OrganizationsService } from '../organizations/organizations.service';
 import { LoginDto } from './dto/login.dto';
 import { RegisterOrganizationDto } from './dto/register-organization.dto';
@@ -325,6 +326,17 @@ export class AuthService {
     };
   }
 
+  async createAuthenticatedSession(
+    user: UserDocument,
+    requestMetadata: {
+      requestId?: string;
+      ipAddress?: string;
+      userAgent?: string;
+    } = {},
+  ) {
+    return this.buildAuthResponse(user, requestMetadata);
+  }
+
   private async buildAuthResponse(
     user: UserDocument,
     requestMetadata: RequestMetadata,
@@ -347,9 +359,7 @@ export class AuthService {
       email: user.email,
       accountType: user.accountType,
       roles: user.roles,
-      organizationId: user.organizationId
-        ? String(user.organizationId)
-        : undefined,
+      organizationId: mongooseRefId(user.organizationId),
       sid: sessionId,
     };
 
@@ -365,13 +375,20 @@ export class AuthService {
 
   private serializeUser(user: UserDocument) {
     const populatedOrganization = user.organizationId as
-      | { _id?: Types.ObjectId; name?: string }
+      | {
+          _id?: Types.ObjectId;
+          name?: string;
+          primaryAdminUserId?: Types.ObjectId;
+        }
       | undefined;
     const organization =
       populatedOrganization && populatedOrganization.name
         ? {
             id: String(populatedOrganization._id),
             name: populatedOrganization.name,
+            primaryAdminUserId: populatedOrganization.primaryAdminUserId
+              ? String(populatedOrganization.primaryAdminUserId)
+              : null,
           }
         : undefined;
 
@@ -388,7 +405,7 @@ export class AuthService {
       accountType: user.accountType,
       status: user.status,
       emailVerifiedAt: user.emailVerifiedAt,
-      profileId: user.profileId ? String(user.profileId) : undefined,
+      profileId: mongooseRefId(user.profileId),
       organization,
     };
   }
