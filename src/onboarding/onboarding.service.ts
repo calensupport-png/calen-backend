@@ -13,6 +13,7 @@ import { AccountType } from '../common/enums/account-type.enum';
 import { NotificationsService } from '../dashboard/notifications.service';
 import { EmailService } from '../email/email.service';
 import { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
+import { ScoresService } from '../scores/scores.service';
 import { BANK_CATALOG } from './constants/bank-catalog';
 import { CreateBankConnectionDto } from './dto/bank-connection.dto';
 import { CompleteBankConnectionDto } from './dto/complete-bank-connection.dto';
@@ -108,6 +109,7 @@ export class OnboardingService {
     private readonly accountsService: AccountsService,
     private readonly notificationsService: NotificationsService,
     private readonly emailService: EmailService,
+    private readonly scoresService: ScoresService,
     @InjectModel(OnboardingState.name)
     private readonly onboardingStateModel: Model<OnboardingStateDocument>,
     @InjectModel(IdentityVerificationCase.name)
@@ -819,7 +821,7 @@ export class OnboardingService {
 
   async generateScore(user: AuthenticatedUser) {
     await this.assertVerifiedIndividual(user);
-    const state = await this.upsertState(
+    const queuedState = await this.upsertState(
       user.id,
       {
         scoreStatus: 'queued',
@@ -827,23 +829,38 @@ export class OnboardingService {
       },
       'score_requested',
     );
+    const score = await this.scoresService.generateScore(
+      user.id,
+      queuedState.scoreRequestedAt ?? new Date(),
+    );
+    const state = await this.upsertState(user.id, {
+      scoreStatus: score.status,
+    });
 
     await this.notificationsService.createNotification({
       userId: user.id,
       category: 'score',
-      title: 'Score generation queued',
-      body: 'We have queued your trust score generation and will update your dashboard shortly.',
+      title:
+        score.status === 'insufficient_data'
+          ? 'More data is needed for your CALEN score'
+          : score.status === 'flagged_for_review'
+            ? 'Your CALEN score needs a quick review'
+            : 'Your CALEN score is ready',
+      body:
+        score.status === 'insufficient_data'
+          ? 'Connect more transaction history so CALEN can generate a reliable score.'
+          : score.status === 'flagged_for_review'
+            ? 'We generated your score, but a few transaction patterns need extra review.'
+            : 'Your CALEN score has been generated and is now available on your dashboard.',
       metadata: {
         requestedAt: state.scoreRequestedAt?.toISOString(),
+        scoreRunId: score.id,
+        status: score.status,
       },
     });
 
     return {
-      score: {
-        status: state.scoreStatus,
-        requestedAt: state.scoreRequestedAt,
-        provider: 'mock-score-engine',
-      },
+      score,
       onboarding: await this.getOnboarding(user),
     };
   }

@@ -12,11 +12,11 @@ export class ScoreSnapshot {
   @Prop({ required: true, type: Types.ObjectId, ref: 'User', index: true })
   userId: Types.ObjectId;
 
-  @Prop({ required: true })
-  score: number;
+  @Prop({ type: Number, default: null })
+  score?: number | null;
 
-  @Prop({ required: true, trim: true })
-  band: string;
+  @Prop({ type: String, trim: true, default: null })
+  band?: string | null;
 
   @Prop({ type: [String], default: [] })
   factors: string[];
@@ -26,6 +26,12 @@ export class ScoreSnapshot {
 
   @Prop({ required: true, trim: true })
   provider: string;
+
+  @Prop({ type: String, trim: true, default: null })
+  confidenceLevel?: string | null;
+
+  @Prop({ type: String, trim: true, default: null })
+  scoreRunId?: string | null;
 
   @Prop({ default: Date.now })
   generatedAt: Date;

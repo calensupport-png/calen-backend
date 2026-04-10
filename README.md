@@ -76,11 +76,13 @@ Example:
 
 ```env
 PORT=3000
-CORS_ORIGIN=http://localhost:5173
+CORS_ORIGIN=http://localhost:5173,https://joincalen.com,https://www.joincalen.com
 MONGODB_URI=mongodb://127.0.0.1:27017/calen
 # Optional: Swagger UI path (default: docs)
 SWAGGER_PATH=docs
 ```
+
+`CORS_ORIGIN` accepts a comma-separated list of exact frontend origins. Avoid trailing slashes.
 
 ## Compile and run the project
 

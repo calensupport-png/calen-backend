@@ -37,14 +37,11 @@ import {
   ReferralEventDocument,
 } from './schemas/referral-event.schema';
 import {
-  ScoreSnapshot,
-  ScoreSnapshotDocument,
-} from './schemas/score-snapshot.schema';
-import {
   ShareAccessLog,
   ShareAccessLogDocument,
 } from './schemas/share-access-log.schema';
 import { ShareLink, ShareLinkDocument } from './schemas/share-link.schema';
+import { ScoresService } from '../scores/scores.service';
 import {
   UserSettings,
   UserSettingsDocument,
@@ -60,6 +57,7 @@ export class DashboardService {
     private readonly accountsService: AccountsService,
     private readonly notificationsService: NotificationsService,
     private readonly emailService: EmailService,
+    private readonly scoresService: ScoresService,
     @InjectModel(OnboardingState.name)
     private readonly onboardingStateModel: Model<OnboardingStateDocument>,
     @InjectModel(BankConnection.name)
@@ -78,8 +76,6 @@ export class DashboardService {
     private readonly shareAccessLogModel: Model<ShareAccessLogDocument>,
     @InjectModel(ReferralEvent.name)
     private readonly referralEventModel: Model<ReferralEventDocument>,
-    @InjectModel(ScoreSnapshot.name)
-    private readonly scoreSnapshotModel: Model<ScoreSnapshotDocument>,
   ) {}
 
   async getDashboard(user: AuthenticatedUser) {
@@ -104,7 +100,7 @@ export class DashboardService {
       this.trustContactModel.find({ userId: userObjectId }),
       this.ensureNotifications(user.id),
       this.ensureSettings(user.id),
-      this.getCurrentScore(user),
+      this.scoresService.getLatestScore(user.id),
       this.shareLinkModel.find({ userId: userObjectId, status: 'active' }),
       this.referralEventModel.find({ userId: userObjectId }),
     ]);
@@ -182,17 +178,17 @@ export class DashboardService {
 
   async getScore(user: AuthenticatedUser) {
     this.assertIndividual(user);
-    const score = await this.getCurrentScore(user);
+    const score = await this.scoresService.getLatestScore(user.id);
 
     return {
       score: score
-        ? this.serializeScore(score)
+        ? score
         : {
             score: null,
             band: 'unavailable',
             status: 'pending_generation',
             factors: [],
-            provider: 'mock-score-engine',
+            provider: 'calen-v1',
             generatedAt: null,
           },
     };
@@ -200,13 +196,10 @@ export class DashboardService {
 
   async getScoreHistory(user: AuthenticatedUser) {
     this.assertIndividual(user);
-    await this.ensureScoreSnapshot(user);
-    const history = await this.scoreSnapshotModel
-      .find({ userId: user.id })
-      .sort({ generatedAt: -1 });
+    const history = await this.scoresService.getScoreHistory(user.id);
 
     return {
-      history: history.map((entry) => this.serializeScore(entry)),
+      history,
     };
   }
 
@@ -236,7 +229,7 @@ export class DashboardService {
       userId: userObjectId,
     });
     const bankConnections = await this.getActiveBankConnectionCount(userObjectId);
-    const score = await this.getCurrentScore(user);
+    const score = await this.scoresService.getLatestScore(user.id);
 
     const insights = [
       {
@@ -272,10 +265,10 @@ export class DashboardService {
 
   async getLendingOffers(user: AuthenticatedUser) {
     this.assertIndividual(user);
-    const score = await this.getCurrentScore(user);
+    const score = await this.scoresService.getLatestScore(user.id);
     const settings = await this.ensureSettings(user.id);
 
-    if (!score || score.score < 500) {
+    if (!score || score.score == null || score.score < 500) {
       return {
         offers: [],
         eligibility: {
@@ -577,9 +570,7 @@ export class DashboardService {
     const onboardingState = await this.onboardingStateModel.findOne({
       userId: ownerUserId,
     });
-    const score = await this.scoreSnapshotModel
-      .findOne({ userId: ownerUserId })
-      .sort({ generatedAt: -1 });
+    const score = await this.scoresService.getLatestScore(String(ownerUserId));
 
     const profile = owner.profileId as
       | { shareId?: string; onboardingStatus?: string }
@@ -606,7 +597,7 @@ export class DashboardService {
           employmentProfile: onboardingState?.employmentProfile ?? null,
           financialProfile: onboardingState?.financialProfile ?? null,
         },
-        score: score ? this.serializeScore(score) : null,
+        score: score ?? null,
       },
     };
   }
@@ -708,63 +699,6 @@ export class DashboardService {
     }
   }
 
-  private async ensureScoreSnapshot(user: AuthenticatedUser) {
-    const userObjectId = this.toObjectId(user.id);
-    const existing = await this.scoreSnapshotModel
-      .findOne({ userId: userObjectId })
-      .sort({ generatedAt: -1 });
-
-    if (existing) {
-      return existing;
-    }
-
-    const onboardingState = await this.onboardingStateModel.findOne({
-      userId: userObjectId,
-    });
-    if (!onboardingState?.scoreRequestedAt) {
-      return null;
-    }
-
-    const bankConnections = await this.getActiveBankConnectionCount(userObjectId);
-    const trustContacts = await this.trustContactModel.countDocuments({
-      userId: userObjectId,
-    });
-    const completedSteps = onboardingState.completedSteps.length;
-    const scoreValue = Math.min(
-      820,
-      420 + completedSteps * 35 + bankConnections * 25 + trustContacts * 15,
-    );
-
-    return this.scoreSnapshotModel.create({
-      userId: userObjectId,
-      score: scoreValue,
-      band: this.resolveScoreBand(scoreValue),
-      factors: [
-        onboardingState.onboardingCompletedAt
-          ? 'Completed onboarding journey'
-          : 'Continue onboarding for stronger profile confidence',
-        bankConnections > 0
-          ? 'Connected bank data available'
-          : 'Add a bank connection to improve verification depth',
-        trustContacts > 0
-          ? 'Trust network has been initiated'
-          : 'Add trust contacts for richer social proof',
-      ],
-      status: 'ready',
-      provider: 'mock-score-engine',
-      generatedAt: onboardingState.scoreRequestedAt,
-    });
-  }
-
-  private async getCurrentScore(user: AuthenticatedUser) {
-    const userObjectId = this.toObjectId(user.id);
-    await this.ensureScoreSnapshot(user);
-
-    return this.scoreSnapshotModel
-      .findOne({ userId: userObjectId })
-      .sort({ generatedAt: -1 });
-  }
-
   private async getActiveBankConnectionCount(userObjectId: Types.ObjectId) {
     const bankConnections = await this.bankConnectionModel
       .find({
@@ -795,31 +729,6 @@ export class DashboardService {
     }
 
     return uniqueConnections.size;
-  }
-
-  private resolveScoreBand(score: number): string {
-    if (score >= 760) {
-      return 'excellent';
-    }
-    if (score >= 680) {
-      return 'strong';
-    }
-    if (score >= 600) {
-      return 'fair';
-    }
-    return 'building';
-  }
-
-  private serializeScore(score: ScoreSnapshotDocument) {
-    return {
-      id: String(score._id),
-      score: score.score,
-      band: score.band,
-      factors: score.factors,
-      status: score.status,
-      provider: score.provider,
-      generatedAt: score.generatedAt,
-    };
   }
 
   private serializeNotification(notification: NotificationDocument) {

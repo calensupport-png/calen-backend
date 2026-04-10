@@ -3,6 +3,7 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { AccountsModule } from '../accounts/accounts.module';
 import { AuthModule } from '../auth/auth.module';
 import { EmailModule } from '../email/email.module';
+import { ScoresModule } from '../scores/scores.module';
 import { Session, SessionSchema } from '../auth/schemas/session.schema';
 import {
   BankConnection,
@@ -29,10 +30,6 @@ import {
   ReferralEventSchema,
 } from './schemas/referral-event.schema';
 import {
-  ScoreSnapshot,
-  ScoreSnapshotSchema,
-} from './schemas/score-snapshot.schema';
-import {
   ShareAccessLog,
   ShareAccessLogSchema,
 } from './schemas/share-access-log.schema';
@@ -47,6 +44,7 @@ import {
     AccountsModule,
     AuthModule,
     EmailModule,
+    ScoresModule,
     MongooseModule.forFeature([
       { name: OnboardingState.name, schema: OnboardingStateSchema },
       { name: BankConnection.name, schema: BankConnectionSchema },
@@ -57,7 +55,6 @@ import {
       { name: ShareLink.name, schema: ShareLinkSchema },
       { name: ShareAccessLog.name, schema: ShareAccessLogSchema },
       { name: ReferralEvent.name, schema: ReferralEventSchema },
-      { name: ScoreSnapshot.name, schema: ScoreSnapshotSchema },
     ]),
   ],
   controllers: [DashboardController, PublicShareLinksController],

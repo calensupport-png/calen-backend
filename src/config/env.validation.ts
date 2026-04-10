@@ -26,7 +26,8 @@ export interface EnvironmentVariables {
 const DEFAULTS: EnvironmentVariables = {
   NODE_ENV: 'development',
   PORT: 3000,
-  CORS_ORIGIN: 'http://localhost:5173',
+  CORS_ORIGIN:
+    'http://localhost:5173,https://joincalen.com,https://www.joincalen.com',
   MONGODB_URI: 'mongodb://127.0.0.1:27017/calen',
   JWT_SECRET: 'calen-dev-secret-change-me',
   JWT_EXPIRES_IN: '1h',

@@ -4,6 +4,7 @@ import { AccountsModule } from '../accounts/accounts.module';
 import { AuthModule } from '../auth/auth.module';
 import { DashboardModule } from '../dashboard/dashboard.module';
 import { EmailModule } from '../email/email.module';
+import { ScoresModule } from '../scores/scores.module';
 import {
   BankConnection,
   BankConnectionSchema,
@@ -34,6 +35,7 @@ import { OnboardingService } from './onboarding.service';
     AuthModule,
     DashboardModule,
     EmailModule,
+    ScoresModule,
     MongooseModule.forFeature([
       { name: OnboardingState.name, schema: OnboardingStateSchema },
       {

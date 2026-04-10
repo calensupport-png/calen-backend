@@ -2,7 +2,7 @@ import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
-import { configureApp } from './configure-app';
+import { configureApp, parseAllowedOrigins } from './configure-app';
 
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
@@ -22,11 +22,11 @@ async function bootstrap() {
   await app.listen(port);
 
   const appUrl = await app.getUrl();
-  const frontendOrigin = process.env.CORS_ORIGIN ?? 'http://localhost:5173';
+  const frontendOrigins = parseAllowedOrigins(process.env.CORS_ORIGIN);
 
   logger.log(`CALEN server is running on port ${port}`);
   logger.log(`HTTP base URL: ${appUrl}/api/v1`);
   logger.log(`Swagger docs URL: ${appUrl}/${swaggerPath}`);
-  logger.log(`Frontend origin allowed: ${frontendOrigin}`);
+  logger.log(`Frontend origins allowed: ${frontendOrigins.join(', ')}`);
 }
 bootstrap();

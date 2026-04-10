@@ -1,4 +1,5 @@
 import { ForbiddenException, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { getModelToken } from '@nestjs/mongoose';
 import { Test } from '@nestjs/testing';
 import { Types } from 'mongoose';
@@ -6,6 +7,7 @@ import { AccountsService } from '../accounts/accounts.service';
 import { AccountType } from '../common/enums/account-type.enum';
 import { NotificationsService } from '../dashboard/notifications.service';
 import { EmailService } from '../email/email.service';
+import { ScoresService } from '../scores/scores.service';
 import { OnboardingService } from './onboarding.service';
 import { BankConnection } from './schemas/bank-connection.schema';
 import { IdentityVerificationCase } from './schemas/identity-verification-case.schema';
@@ -36,6 +38,10 @@ describe('OnboardingService', () => {
   const emailService = {
     sendWelcomeEmail: jest.fn(),
   };
+  const configService = {};
+  const scoresService = {
+    generateScore: jest.fn(),
+  };
   const accountsService = {
     updateProfileOnboardingState: jest.fn(),
     findUserByIdOrThrow: jest.fn(),
@@ -52,6 +58,15 @@ describe('OnboardingService', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    scoresService.generateScore.mockResolvedValue({
+      id: 'score-run-1',
+      score: 724,
+      band: 'strong',
+      status: 'ready',
+      provider: 'calen-v1',
+      generatedAt: new Date('2026-03-26T00:00:00.000Z'),
+      factors: ['Income patterns have been consistent across most observed months.'],
+    });
     accountsService.findUserByIdOrThrow.mockResolvedValue({
       _id: user.id,
       email: user.email,
@@ -72,6 +87,14 @@ describe('OnboardingService', () => {
         {
           provide: EmailService,
           useValue: emailService,
+        },
+        {
+          provide: ConfigService,
+          useValue: configService,
+        },
+        {
+          provide: ScoresService,
+          useValue: scoresService,
         },
         {
           provide: getModelToken(OnboardingState.name),
@@ -263,12 +286,12 @@ describe('OnboardingService', () => {
     ).rejects.toBeInstanceOf(NotFoundException);
   });
 
-  it('creates a notification when score generation is queued', async () => {
+  it('creates a notification when score generation completes', async () => {
     const existingState = {
       completedSteps: ['personal_profile'],
       currentStep: 'generate_score',
     };
-    const updatedState = {
+    const queuedState = {
       completedSteps: ['personal_profile', 'score_requested'],
       scoreStatus: 'queued',
       scoreRequestedAt: new Date('2026-03-26T00:00:00.000Z'),
@@ -279,12 +302,18 @@ describe('OnboardingService', () => {
       identityVerificationStatus: 'pending_review',
       onboardingCompletedAt: undefined,
     };
+    const readyState = {
+      ...queuedState,
+      scoreStatus: 'ready',
+    };
 
-    onboardingStateModel.findOne.mockResolvedValueOnce(updatedState);
+    onboardingStateModel.findOne.mockResolvedValueOnce(readyState);
     onboardingStateModel.findOneAndUpdate
       .mockResolvedValueOnce(existingState)
-      .mockResolvedValueOnce(updatedState)
-      .mockResolvedValueOnce(updatedState);
+      .mockResolvedValueOnce(queuedState)
+      .mockResolvedValueOnce(queuedState)
+      .mockResolvedValueOnce(readyState)
+      .mockResolvedValueOnce(readyState);
     identityVerificationCaseModel.findOne.mockReturnValue({
       sort: jest.fn().mockResolvedValue(null),
     });
@@ -300,10 +329,15 @@ describe('OnboardingService', () => {
 
     await service.generateScore(user);
 
+    expect(scoresService.generateScore).toHaveBeenCalledWith(
+      user.id,
+      new Date('2026-03-26T00:00:00.000Z'),
+    );
     expect(notificationsService.createNotification).toHaveBeenCalledWith(
       expect.objectContaining({
         userId: user.id,
         category: 'score',
+        title: 'Your CALEN score is ready',
       }),
     );
   });
@@ -322,7 +356,7 @@ describe('OnboardingService', () => {
       onboardingCompletedAt: undefined,
       welcomeEmailSentAt: undefined,
     };
-    const updatedState = {
+    const queuedState = {
       ...completedState,
       completedSteps: [...completedState.completedSteps, 'score_requested'],
       scoreStatus: 'queued',
@@ -334,12 +368,18 @@ describe('OnboardingService', () => {
       financialProfile: null,
       identityVerificationStatus: 'pending_review',
     };
+    const readyState = {
+      ...queuedState,
+      scoreStatus: 'ready',
+    };
 
-    onboardingStateModel.findOne.mockResolvedValueOnce(updatedState);
+    onboardingStateModel.findOne.mockResolvedValueOnce(readyState);
     onboardingStateModel.findOneAndUpdate
       .mockResolvedValueOnce(completedState)
-      .mockResolvedValueOnce(updatedState)
-      .mockResolvedValueOnce(updatedState);
+      .mockResolvedValueOnce(queuedState)
+      .mockResolvedValueOnce(queuedState)
+      .mockResolvedValueOnce(readyState)
+      .mockResolvedValueOnce(readyState);
     identityVerificationCaseModel.findOne.mockReturnValue({
       sort: jest.fn().mockResolvedValue(null),
     });

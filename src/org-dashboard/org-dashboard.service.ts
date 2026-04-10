@@ -734,9 +734,14 @@ export class OrgDashboardService {
     dto: CreateOrgLendingOfferDto,
   ) {
     this.assertOrganization(user);
+    const organization = await this.organizationsService.findByIdOrThrow(
+      user.organizationId!,
+    );
+    const nextOfferId = this.getNextCustomOfferId(organization);
+
     await this.updateWorkspaceData(user.organizationId!, (workspace) => {
       workspace.lendingOffers.unshift({
-        id: `LO-${String(workspace.lendingOffers.length + 1).padStart(3, '0')}`,
+        id: nextOfferId,
         ...this.buildStoredLendingOfferFields(dto),
         applicants: 0,
         views: 0,
@@ -1127,6 +1132,16 @@ export class OrgDashboardService {
         workspaceData.riskNotesByApplicant ??
         EMPTY_WORKSPACE_DATA.riskNotesByApplicant,
     };
+  }
+
+  private getRawWorkspaceData(
+    organization: OrganizationSettingsShape,
+  ): Partial<OrgWorkspaceData> {
+    return (
+      (organization.onboardingData?.workspaceData as
+        | Partial<OrgWorkspaceData>
+        | undefined) ?? {}
+    );
   }
 
   private async getStoredLendingOffers(organization: OrganizationSettingsShape) {
@@ -2627,6 +2642,37 @@ export class OrgDashboardService {
       apr: `${this.formatApr(dto.minApr)} – ${this.formatApr(dto.maxApr)}`,
       minScore: dto.minScore ?? 650,
     };
+  }
+
+  private getNextCustomOfferId(organization: OrganizationSettingsShape) {
+    const rawWorkspaceData = this.getRawWorkspaceData(organization);
+    const existingOfferIds = new Set(
+      Array.isArray(rawWorkspaceData.lendingOffers)
+        ? rawWorkspaceData.lendingOffers
+            .map((offer) => offer?.id)
+            .filter((offerId): offerId is string => typeof offerId === 'string')
+        : [],
+    );
+
+    let nextNumber = 1;
+
+    if (existingOfferIds.size > 0) {
+      nextNumber =
+        Math.max(
+          ...Array.from(existingOfferIds, (offerId) => {
+            const match = /^LO-(\d+)$/i.exec(offerId);
+            return match ? Number(match[1]) : 0;
+          }),
+        ) + 1;
+    }
+
+    let candidateId = `LO-${String(nextNumber).padStart(3, '0')}`;
+    while (SEEDED_OFFER_IDS.has(candidateId) || existingOfferIds.has(candidateId)) {
+      nextNumber += 1;
+      candidateId = `LO-${String(nextNumber).padStart(3, '0')}`;
+    }
+
+    return candidateId;
   }
 
   private formatMoney(value?: number) {

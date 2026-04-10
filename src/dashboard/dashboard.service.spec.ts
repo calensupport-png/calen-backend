@@ -13,10 +13,10 @@ import { EmailService } from '../email/email.service';
 import { NotificationsService } from './notifications.service';
 import { Notification } from './schemas/notification.schema';
 import { ReferralEvent } from './schemas/referral-event.schema';
-import { ScoreSnapshot } from './schemas/score-snapshot.schema';
 import { ShareAccessLog } from './schemas/share-access-log.schema';
 import { ShareLink } from './schemas/share-link.schema';
 import { UserSettings } from './schemas/user-settings.schema';
+import { ScoresService } from '../scores/scores.service';
 
 function createModelMock() {
   return {
@@ -41,12 +41,15 @@ describe('DashboardService', () => {
   const shareLinkModel = createModelMock();
   const shareAccessLogModel = createModelMock();
   const referralEventModel = createModelMock();
-  const scoreSnapshotModel = createModelMock();
   const notificationsService = {
     createNotification: jest.fn(),
   };
   const emailService = {
     sendReferralInviteEmail: jest.fn(),
+  };
+  const scoresService = {
+    getLatestScore: jest.fn(),
+    getScoreHistory: jest.fn(),
   };
   const accountsService = {
     findUserByIdOrThrow: jest.fn(),
@@ -77,6 +80,10 @@ describe('DashboardService', () => {
         {
           provide: EmailService,
           useValue: emailService,
+        },
+        {
+          provide: ScoresService,
+          useValue: scoresService,
         },
         {
           provide: getModelToken(OnboardingState.name),
@@ -113,10 +120,6 @@ describe('DashboardService', () => {
         {
           provide: getModelToken(ReferralEvent.name),
           useValue: referralEventModel,
-        },
-        {
-          provide: getModelToken(ScoreSnapshot.name),
-          useValue: scoreSnapshotModel,
         },
       ],
     }).compile();
@@ -167,41 +170,21 @@ describe('DashboardService', () => {
     expect(result.settings.shareDefaultAccess).toBe('private');
   });
 
-  it('creates a score snapshot from onboarding data when score generation was requested', async () => {
-    scoreSnapshotModel.findOne
-      .mockReturnValueOnce({ sort: jest.fn().mockResolvedValue(null) })
-      .mockReturnValueOnce({
-        sort: jest.fn().mockResolvedValue({
-          _id: 'score-1',
-          score: 565,
-          band: 'building',
-          factors: ['factor'],
-          status: 'ready',
-          provider: 'mock-score-engine',
-          generatedAt: new Date('2026-03-26T00:00:00.000Z'),
-        }),
-      });
-    onboardingStateModel.findOne.mockResolvedValue({
-      scoreRequestedAt: new Date('2026-03-26T00:00:00.000Z'),
-      completedSteps: ['personal_profile', 'financial_profile'],
-      onboardingCompletedAt: null,
-    });
-    bankConnectionModel.countDocuments.mockResolvedValue(1);
-    trustContactModel.countDocuments.mockResolvedValue(1);
-    scoreSnapshotModel.create.mockResolvedValue({
-      _id: 'score-1',
-      score: 565,
-      band: 'building',
-      factors: ['factor'],
+  it('returns the latest generated score without creating one on read', async () => {
+    scoresService.getLatestScore.mockResolvedValue({
+      id: 'score-1',
+      score: 724,
+      band: 'strong',
+      factors: ['Income patterns have been consistent across most observed months.'],
       status: 'ready',
-      provider: 'mock-score-engine',
+      provider: 'calen-v1',
       generatedAt: new Date('2026-03-26T00:00:00.000Z'),
     });
 
     const result = await service.getScore(user);
 
-    expect(scoreSnapshotModel.create).toHaveBeenCalled();
-    expect(result.score.score).toBe(565);
+    expect(scoresService.getLatestScore).toHaveBeenCalledWith(user.id);
+    expect(result.score.score).toBe(724);
   });
 
   it('rejects dashboard endpoints for non-individual accounts', async () => {
@@ -296,16 +279,14 @@ describe('DashboardService', () => {
       employmentProfile: { employerName: 'Calen', monthlyIncome: 3200 },
       financialProfile: { monthlyExpenses: 1200 },
     });
-    scoreSnapshotModel.findOne.mockReturnValue({
-      sort: jest.fn().mockResolvedValue({
-        _id: 'score-1',
-        score: 710,
-        band: 'strong',
-        factors: ['Completed onboarding'],
-        status: 'ready',
-        provider: 'mock-score-engine',
-        generatedAt: new Date('2026-03-26T00:00:00.000Z'),
-      }),
+    scoresService.getLatestScore.mockResolvedValue({
+      id: 'score-1',
+      score: 710,
+      band: 'strong',
+      factors: ['Completed onboarding'],
+      status: 'ready',
+      provider: 'calen-v1',
+      generatedAt: new Date('2026-03-26T00:00:00.000Z'),
     });
 
     const result = await service.getSharedProfile('share_token', {
@@ -318,9 +299,9 @@ describe('DashboardService', () => {
     expect(onboardingStateModel.findOne).toHaveBeenCalledWith({
       userId: new Types.ObjectId('507f1f77bcf86cd799439099'),
     });
-    expect(scoreSnapshotModel.findOne).toHaveBeenCalledWith({
-      userId: new Types.ObjectId('507f1f77bcf86cd799439099'),
-    });
+    expect(scoresService.getLatestScore).toHaveBeenCalledWith(
+      '507f1f77bcf86cd799439099',
+    );
     expect(result.sharedProfile.owner.displayName).toBe('Amina Yusuf');
     expect(result.sharedProfile.profile.personalProfile).toEqual({
       fullName: 'Amina Yusuf',
