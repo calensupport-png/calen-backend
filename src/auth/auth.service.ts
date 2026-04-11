@@ -124,12 +124,12 @@ export class AuthService {
       jobTitle: dto.jobTitle,
       roles: [AccountRole.ORGANISATION],
       accountType: AccountType.ORGANISATION,
-      organizationId: organization._id as Types.ObjectId,
+      organizationId: organization._id,
     });
 
     await this.organizationsService.assignPrimaryAdmin(
-      organization._id as Types.ObjectId,
-      user._id as Types.ObjectId,
+      organization._id,
+      user._id,
     );
 
     await this.auditLogsService.record({
@@ -211,7 +211,10 @@ export class AuthService {
   }
 
   async verifyEmail(dto: VerifyEmailDto) {
-    const authToken = await this.findValidToken(dto.token, 'email_verification');
+    const authToken = await this.findValidToken(
+      dto.token,
+      'email_verification',
+    );
 
     if (!authToken) {
       throw new BadRequestException({
@@ -275,21 +278,26 @@ export class AuthService {
 
   async forgotPassword(email: string) {
     const user = await this.accountsService.findUserByEmail(email);
+    let resetUrl: string | undefined;
 
     if (user) {
       const token = await this.issueAuthToken(user, 'password_reset', 60 * 60);
+      resetUrl = `${this.getAppBaseUrl()}/forgot-password?token=${encodeURIComponent(
+        token,
+      )}&email=${encodeURIComponent(user.email)}`;
       await this.emailService.sendPasswordResetEmail({
         to: user.email,
         firstName: user.firstName,
-        resetUrl: `${this.getAppBaseUrl()}/forgot-password?token=${encodeURIComponent(
-          token,
-        )}&email=${encodeURIComponent(user.email)}`,
+        resetUrl,
       });
     }
 
     return {
       message:
         'If an account exists for that email, password reset instructions have been sent.',
+      ...(this.shouldExposeAuthLinksInResponse() && resetUrl
+        ? { resetUrl }
+        : {}),
     };
   }
 
@@ -414,7 +422,11 @@ export class AuthService {
     user: UserDocument,
     firstName?: string,
   ): Promise<void> {
-    const token = await this.issueAuthToken(user, 'email_verification', 24 * 60 * 60);
+    const token = await this.issueAuthToken(
+      user,
+      'email_verification',
+      24 * 60 * 60,
+    );
     await this.emailService.sendEmailVerificationEmail({
       to: user.email,
       firstName: firstName ?? user.firstName,
@@ -476,6 +488,10 @@ export class AuthService {
       this.configService.get<string>('APP_BASE_URL')?.trim() ||
       'http://localhost:8080'
     );
+  }
+
+  private shouldExposeAuthLinksInResponse(): boolean {
+    return this.configService.get<string>('NODE_ENV') !== 'production';
   }
 
   private resolveExpiryDate(expiresIn: string): Date {

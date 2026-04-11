@@ -57,6 +57,16 @@ export class UnderwritingController {
     return this.underwritingService.getCase(req.user, caseId);
   }
 
+  @Get('org/me/underwriting/cases/:caseId/export')
+  @ApiOperation({ summary: 'Export a structured decision record for an underwriting case' })
+  @ApiOkResponse()
+  exportCase(
+    @Req() req: AuthenticatedRequest,
+    @Param('caseId') caseId: string,
+  ) {
+    return this.underwritingService.exportCase(req.user, caseId);
+  }
+
   @Patch('org/me/underwriting/cases/:caseId/stage')
   @ApiOperation({ summary: 'Update an underwriting case stage' })
   @ApiBody({ type: UpdateUnderwritingCaseStageDto })

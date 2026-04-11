@@ -124,6 +124,27 @@ class UnderwritingScoreSnapshot {
 }
 
 @Schema({ _id: false, versionKey: false })
+class UnderwritingDecisionRuleMatch {
+  @Prop({ required: true })
+  id: number;
+
+  @Prop({ required: true, trim: true })
+  field: string;
+
+  @Prop({ required: true, trim: true })
+  operator: string;
+
+  @Prop({ required: true, trim: true })
+  value: string;
+
+  @Prop({ required: true, trim: true })
+  action: string;
+
+  @Prop({ required: true, trim: true })
+  trigger: string;
+}
+
+@Schema({ _id: false, versionKey: false })
 class UnderwritingPolicySnapshot {
   @Prop({ type: Number, default: null })
   minimumScore?: number | null;
@@ -136,18 +157,87 @@ class UnderwritingPolicySnapshot {
 
   @Prop({ type: [String], default: [] })
   triggeredRules: string[];
+
+  @Prop({ type: [UnderwritingDecisionRuleMatch], default: [] })
+  decisionRules: UnderwritingDecisionRuleMatch[];
+}
+
+@Schema({ _id: false, versionKey: false })
+class UnderwritingObligationContext {
+  @Prop({ type: Number, default: null })
+  requestedAmount?: number | null;
+
+  @Prop({ type: Number, default: null })
+  requestedTermMonths?: number | null;
+
+  @Prop({ type: Number, default: null })
+  monthlyObligationAmount?: number | null;
+
+  @Prop({ type: String, trim: true, default: null })
+  productCategory?: string | null;
+
+  @Prop({ type: String, trim: true, default: null })
+  decisionPurpose?: string | null;
+}
+
+@Schema({ _id: false, versionKey: false })
+class UnderwritingAssessment {
+  @Prop({ type: Number, default: null })
+  affordabilityScore?: number | null;
+
+  @Prop({ type: Number, default: null })
+  incomeStabilityScore?: number | null;
+
+  @Prop({ type: Number, default: null })
+  resilienceScore?: number | null;
+
+  @Prop({ required: true, trim: true, default: 'Medium' })
+  debtPressureIndicator: 'Low' | 'Medium' | 'High';
+
+  @Prop({ type: Number, default: null })
+  surplusCashEstimate?: number | null;
+
+  @Prop({ required: true, trim: true, default: 'Moderate' })
+  volatilitySignal: 'Stable' | 'Moderate' | 'Volatile';
+
+  @Prop({ type: [String], default: [] })
+  strengths: string[];
+
+  @Prop({ type: [String], default: [] })
+  riskFactors: string[];
+
+  @Prop({ type: Date, default: Date.now })
+  generatedAt: Date;
 }
 
 @Schema({ _id: false, versionKey: false })
 class UnderwritingRecommendation {
   @Prop({ required: true, trim: true })
-  outcome: 'approve' | 'review' | 'decline';
+  outcome: 'approve' | 'approve_with_conditions' | 'review' | 'decline';
+
+  @Prop({ type: String, trim: true, default: null })
+  summary?: string | null;
 
   @Prop({ type: [String], default: [] })
   reasons: string[];
 
   @Prop({ type: [String], default: [] })
   triggeredPolicies: string[];
+
+  @Prop({ type: [String], default: [] })
+  policyTriggers: string[];
+
+  @Prop({ type: [String], default: [] })
+  strengths: string[];
+
+  @Prop({ type: [String], default: [] })
+  riskFactors: string[];
+
+  @Prop({ type: [String], default: [] })
+  manualReviewReasons: string[];
+
+  @Prop({ type: [String], default: [] })
+  conditions: string[];
 
   @Prop({ required: true, trim: true, default: 'manual_review' })
   decisionMode: string;
@@ -235,6 +325,12 @@ export class UnderwritingCase {
 
   @Prop({ type: UnderwritingPolicySnapshot, required: true })
   policySnapshot: UnderwritingPolicySnapshot;
+
+  @Prop({ type: UnderwritingObligationContext, required: true })
+  obligationContext: UnderwritingObligationContext;
+
+  @Prop({ type: UnderwritingAssessment, required: true })
+  underwritingAssessment: UnderwritingAssessment;
 
   @Prop({ type: UnderwritingRecommendation, required: true })
   recommendation: UnderwritingRecommendation;

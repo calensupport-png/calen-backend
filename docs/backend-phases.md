@@ -2,6 +2,8 @@
 
 This plan is derived from the current frontend in `trusty-identity-builder` and is meant to guide how `calen-be` should grow from a Nest starter into the main application server.
 
+For the organisation product specifically, use this alongside [organization-product-phase-map.md](/Users/jay/Desktop/calen/calen-be/docs/organization-product-phase-map.md), which maps the product overview in `CALEN_for_Organisations.md` to the current implementation and recommended product sequencing, and [organization-product-backlog.md](/Users/jay/Desktop/calen/calen-be/docs/organization-product-backlog.md), which breaks that roadmap into concrete implementation slices.
+
 ## What the frontend already expects
 
 The frontend is not just a marketing site. It already models four backend-heavy product areas:

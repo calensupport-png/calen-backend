@@ -8,10 +8,6 @@ import { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interfa
 import { AccountType } from '../common/enums/account-type.enum';
 import { MarkNotificationsReadDto } from '../dashboard/dto/mark-notifications-read.dto';
 import {
-  ScoreSnapshot,
-  ScoreSnapshotDocument,
-} from '../dashboard/schemas/score-snapshot.schema';
-import {
   Notification,
   NotificationDocument,
 } from '../dashboard/schemas/notification.schema';
@@ -44,6 +40,7 @@ import { CreateOrgApiKeyDto } from './dto/create-org-api-key.dto';
 import { CreateOrgLendingOfferDto } from './dto/create-org-lending-offer.dto';
 import { GetOrgProfileSearchDto } from './dto/get-org-profile-search.dto';
 import { SaveOrgRiskNotesDto } from './dto/save-org-risk-notes.dto';
+import { ScoresService } from '../scores/scores.service';
 import { UpdateOrgDecisionRulesDto } from './dto/update-org-decision-rules.dto';
 import { UpdateOrgPipelineStageDto } from './dto/update-org-pipeline-stage.dto';
 import { UpdateOrgDashboardSettingsDto } from './dto/update-org-dashboard-settings.dto';
@@ -75,6 +72,82 @@ type OrganizationSettingsShape = {
   _id?: unknown;
 };
 
+type LatestScorePayload = Awaited<ReturnType<ScoresService['getLatestScore']>>;
+
+type OrgAssessmentShape = {
+  affordabilityScore: number | null;
+  incomeStabilityScore: number | null;
+  resilienceScore: number | null;
+  cashFlowStabilityScore: number | null;
+  spendingDisciplineScore: number | null;
+  confidenceScore: number | null;
+  confidenceLevel: string | null;
+  debtPressureIndicator: 'Low' | 'Medium' | 'High';
+  surplusCashEstimate: number | null;
+  volatilitySignal: 'Stable' | 'Moderate' | 'Volatile';
+  strengths: string[];
+  riskFactors: string[];
+  scoreStatus: string;
+  anomalyFlags: Array<{
+    code: string;
+    severity: string;
+    detail?: string;
+  }>;
+  generatedAt: Date;
+};
+
+type OrgDecisionSimulationCandidate = {
+  id: string;
+  calenId: string;
+  name: string;
+  score: number | null;
+  riskLevel: 'Low' | 'Moderate' | 'High';
+  affordabilityScore: number | null;
+  incomeStabilityScore: number | null;
+  resilienceScore: number | null;
+  confidenceScore: number | null;
+  confidenceLevel: string | null;
+  surplusCashEstimate: number | null;
+  volatilitySignal: 'Stable' | 'Moderate' | 'Volatile';
+  scoreStatus: string;
+  recommendation: 'approve' | 'review' | 'decline';
+  strengths: string[];
+  riskFactors: string[];
+};
+
+const ORG_DECISION_FIELDS = [
+  {
+    label: 'CALEN Score',
+    description: 'Overall behavioural score from the latest scoring run.',
+    unit: 'score',
+  },
+  {
+    label: 'Affordability Score',
+    description: 'Estimated capacity to carry additional obligations.',
+    unit: 'score',
+  },
+  {
+    label: 'Income Stability',
+    description: 'Consistency of inflows across the observed period.',
+    unit: 'score',
+  },
+  {
+    label: 'Resilience Score',
+    description: 'Balance and liquidity resilience from recent account history.',
+    unit: 'score',
+  },
+  {
+    label: 'Confidence Score',
+    description: 'Confidence in the score based on data depth and quality.',
+    unit: 'score',
+  },
+  {
+    label: 'Surplus Cash',
+    description: 'Estimated monthly headroom after core expenses.',
+    unit: 'currency',
+  },
+] as const;
+
 const EMPTY_WORKSPACE_DATA: OrgWorkspaceData = {
   applicants: [],
   decisionRules: [],
@@ -100,6 +173,7 @@ export class OrgDashboardService {
   constructor(
     private readonly accountsService: AccountsService,
     private readonly organizationsService: OrganizationsService,
+    private readonly scoresService: ScoresService,
     @InjectModel(Notification.name)
     private readonly notificationModel: Model<NotificationDocument>,
     @InjectModel(UserSettings.name)
@@ -116,8 +190,6 @@ export class OrgDashboardService {
     private readonly bankConnectionModel: Model<BankConnectionDocument>,
     @InjectModel(TrustContact.name)
     private readonly trustContactModel: Model<TrustContactDocument>,
-    @InjectModel(ScoreSnapshot.name)
-    private readonly scoreSnapshotModel: Model<ScoreSnapshotDocument>,
   ) {}
 
   async getDashboard(user: AuthenticatedUser) {
@@ -585,9 +657,7 @@ export class OrgDashboardService {
         this.trustContactModel.find({ userId: subjectUserId }).sort({
           createdAt: -1,
         }),
-        this.scoreSnapshotModel.findOne({ userId: subjectUserId }).sort({
-          generatedAt: -1,
-        }),
+        this.scoresService.getLatestScore(String(account._id)),
       ]);
 
     const workspace = this.getWorkspaceData(organization);
@@ -667,9 +737,7 @@ export class OrgDashboardService {
         this.trustContactModel.find({ userId: subjectUserId }).sort({
           createdAt: -1,
         }),
-        this.scoreSnapshotModel.findOne({ userId: subjectUserId }).sort({
-          generatedAt: -1,
-        }),
+        this.scoresService.getLatestScore(String(account._id)),
       ]);
 
     const candidate = this.buildDecisionSimulationCandidate({
@@ -1401,7 +1469,7 @@ export class OrgDashboardService {
     onboardingState: OnboardingStateDocument | null;
     bankConnections: BankConnectionDocument[];
     trustContacts: TrustContactDocument[];
-    latestScore: ScoreSnapshotDocument | null;
+    latestScore: LatestScorePayload | null;
     notes: string;
   }) {
     const { account, onboardingState, bankConnections, trustContacts, latestScore, notes } =
@@ -1443,9 +1511,6 @@ export class OrgDashboardService {
       employmentProfile?.monthlyIncome ??
       financialProfile?.monthlyIncome ??
       0;
-    const monthlyExpenses = financialProfile?.monthlyExpenses ?? 0;
-    const savingsBalance = financialProfile?.savingsBalance ?? 0;
-    const outstandingLoanTotal = financialProfile?.outstandingLoanTotal ?? 0;
     const completedSteps = onboardingState?.completedSteps.length ?? 0;
     const connectedBanks = bankConnections.filter(
       (connection) => connection.status === 'connected',
@@ -1456,35 +1521,10 @@ export class OrgDashboardService {
     const pendingTrustContacts = trustContacts.filter(
       (contact) => contact.status === 'request_sent',
     );
-    const score =
-      latestScore?.score ??
-      Math.min(
-        820,
-        420 + completedSteps * 35 + connectedBanks * 25 + endorsedContacts.length * 15,
-      );
-    const incomeStability = this.clampPercentage(
-      40 +
-        Math.min((employmentProfile?.yearsEmployed ?? 0) * 10, 30) +
-        (monthlyIncome >= 350000 ? 20 : monthlyIncome >= 150000 ? 10 : 0) +
-        (employmentProfile?.employmentType === 'full_time' ? 10 : 0),
-    );
-    const savingsBuffer = this.clampPercentage(
-      monthlyExpenses > 0
-        ? (savingsBalance / monthlyExpenses) * 25
-        : savingsBalance > 0
-          ? 65
-          : 20,
-    );
-    const annualizedIncome = monthlyIncome * 12;
-    const debtManagement = this.clampPercentage(
-      annualizedIncome > 0
-        ? 100 -
-            Math.min(
-              85,
-              (outstandingLoanTotal / annualizedIncome) * 100 + (financialProfile?.loanCount ?? 0) * 5,
-            )
-        : 45,
-    );
+    const assessment = this.buildOrgAssessment({
+      onboardingState,
+      latestScore,
+    });
     const verificationDepth = this.clampPercentage(
       30 +
         (account.emailVerifiedAt ? 15 : 0) +
@@ -1503,49 +1543,45 @@ export class OrgDashboardService {
           Math.max(endorsedContacts.length, 1)) *
           6,
     );
-    const cashFlowHealth = this.clampPercentage(
-      monthlyIncome > 0
-        ? 50 + ((monthlyIncome - monthlyExpenses) / monthlyIncome) * 50
-        : 30,
-    );
+    const score = typeof latestScore?.score === 'number' ? latestScore.score : null;
     const factors = [
-      { subject: 'Income Stability', A: incomeStability },
-      { subject: 'Savings Buffer', A: savingsBuffer },
-      { subject: 'Debt Management', A: debtManagement },
+      { subject: 'Affordability', A: assessment.affordabilityScore ?? 0 },
+      { subject: 'Income Stability', A: assessment.incomeStabilityScore ?? 0 },
+      { subject: 'Resilience', A: assessment.resilienceScore ?? 0 },
+      { subject: 'Confidence', A: assessment.confidenceScore ?? 0 },
       { subject: 'Verification Depth', A: verificationDepth },
-      { subject: 'Trust Network', A: trustStrength },
-      { subject: 'Cash Flow', A: cashFlowHealth },
+      { subject: 'Trust Depth', A: trustStrength },
     ];
     const indicators = [
       {
+        label: 'Affordability',
+        value: assessment.affordabilityScore ?? 0,
+        status: this.getIndicatorStatus(assessment.affordabilityScore ?? 0),
+      },
+      {
         label: 'Income Stability',
-        value: incomeStability,
-        status: this.getIndicatorStatus(incomeStability),
+        value: assessment.incomeStabilityScore ?? 0,
+        status: this.getIndicatorStatus(assessment.incomeStabilityScore ?? 0),
       },
       {
-        label: 'Savings Buffer',
-        value: savingsBuffer,
-        status: this.getIndicatorStatus(savingsBuffer),
+        label: 'Resilience',
+        value: assessment.resilienceScore ?? 0,
+        status: this.getIndicatorStatus(assessment.resilienceScore ?? 0),
       },
       {
-        label: 'Debt Exposure',
-        value: debtManagement,
-        status: this.getIndicatorStatus(debtManagement),
+        label: 'Confidence',
+        value: assessment.confidenceScore ?? 0,
+        status: this.getIndicatorStatus(assessment.confidenceScore ?? 0),
       },
       {
-        label: 'Verification Depth',
-        value: verificationDepth,
-        status: this.getIndicatorStatus(verificationDepth),
+        label: 'Cash-Flow Stability',
+        value: assessment.cashFlowStabilityScore ?? 0,
+        status: this.getIndicatorStatus(assessment.cashFlowStabilityScore ?? 0),
       },
       {
-        label: 'Trust Network',
-        value: trustStrength,
-        status: this.getIndicatorStatus(trustStrength),
-      },
-      {
-        label: 'Cash Flow Health',
-        value: cashFlowHealth,
-        status: this.getIndicatorStatus(cashFlowHealth),
+        label: 'Spending Discipline',
+        value: assessment.spendingDisciplineScore ?? 0,
+        status: this.getIndicatorStatus(assessment.spendingDisciplineScore ?? 0),
       },
     ];
     const name = account.displayName;
@@ -1562,9 +1598,27 @@ export class OrgDashboardService {
       id: profile?.shareId ?? '',
       score,
       initials,
-      riskLevel: this.getRiskLevelFromScore(score),
+      riskLevel: this.getRiskLevelFromAssessment(score, assessment),
+      scoreStatus: latestScore?.status ?? 'unavailable',
       factors,
       indicators,
+      assessment: {
+        affordabilityScore: assessment.affordabilityScore,
+        incomeStabilityScore: assessment.incomeStabilityScore,
+        resilienceScore: assessment.resilienceScore,
+        confidenceScore: assessment.confidenceScore,
+        confidenceLevel: assessment.confidenceLevel,
+        debtPressureIndicator: assessment.debtPressureIndicator,
+        surplusCashEstimate: assessment.surplusCashEstimate,
+        volatilitySignal: assessment.volatilitySignal,
+      },
+      recommendationPreview: this.buildOrgRecommendationPreview(
+        score,
+        assessment,
+      ),
+      strengths: assessment.strengths,
+      riskFactors: assessment.riskFactors,
+      anomalyFlags: assessment.anomalyFlags,
       trustEndorsements: [
         ...endorsedContacts.map((contact) => ({
           type: contact.relationship,
@@ -1594,17 +1648,35 @@ export class OrgDashboardService {
 
   private buildDecisionEnginePayload(
     rules: WorkspaceDecisionRule[],
-    candidate?: WorkspaceApplicant,
+    candidate?: OrgDecisionSimulationCandidate,
     calenId = '',
   ) {
     return {
       workflowSteps: [
-        'Profile Received',
-        'Score Analysed',
+        'Profile Retrieved',
+        'Assessment Derived',
         'Rules Applied',
-        'Decision Output',
+        'Decision Proposed',
       ],
+      availableFields: ORG_DECISION_FIELDS,
       rules,
+      simulationProfile: candidate
+        ? {
+            id: candidate.id,
+            calenId: candidate.calenId,
+            name: candidate.name,
+            score: candidate.score,
+            riskLevel: candidate.riskLevel,
+            affordabilityScore: candidate.affordabilityScore,
+            confidenceScore: candidate.confidenceScore,
+            confidenceLevel: candidate.confidenceLevel,
+            surplusCashEstimate: candidate.surplusCashEstimate,
+            scoreStatus: candidate.scoreStatus,
+            recommendation: candidate.recommendation,
+            strengths: candidate.strengths,
+            riskFactors: candidate.riskFactors,
+          }
+        : null,
       simulationResults: candidate
         ? this.simulateDecisionResults([candidate], rules)
         : [],
@@ -1619,119 +1691,45 @@ export class OrgDashboardService {
     onboardingState: OnboardingStateDocument | null;
     bankConnections: BankConnectionDocument[];
     trustContacts: TrustContactDocument[];
-    latestScore: ScoreSnapshotDocument | null;
-  }): WorkspaceApplicant {
-    const { account, onboardingState, bankConnections, trustContacts, latestScore } =
-      input;
+    latestScore: LatestScorePayload | null;
+  }): OrgDecisionSimulationCandidate {
+    const { account, onboardingState, trustContacts, latestScore } = input;
     const profile = account.profileId as
       | {
           shareId?: string;
         }
       | undefined;
-    const employmentProfile =
-      (onboardingState?.employmentProfile as
-        | {
-            employerName?: string;
-            jobTitle?: string;
-            monthlyIncome?: number;
-          }
-        | null
-        | undefined) ?? null;
-    const financialProfile =
-      (onboardingState?.financialProfile as
-        | {
-            monthlyIncome?: number;
-            monthlyExpenses?: number;
-            savingsBalance?: number;
-            outstandingLoanTotal?: number;
-            loanCount?: number;
-          }
-        | null
-        | undefined) ?? null;
-    const personalProfile =
-      (onboardingState?.personalProfile as
-        | { city?: string; country?: string }
-        | null
-        | undefined) ?? null;
-    const monthlyIncome =
-      employmentProfile?.monthlyIncome ??
-      financialProfile?.monthlyIncome ??
-      0;
-    const monthlyExpenses = financialProfile?.monthlyExpenses ?? 0;
-    const savingsBalance = financialProfile?.savingsBalance ?? 0;
-    const outstandingLoanTotal = financialProfile?.outstandingLoanTotal ?? 0;
-    const annualizedIncome = monthlyIncome * 12;
-    const annualIncome = annualizedIncome;
-    const connectedBanks = bankConnections.filter(
-      (connection) => connection.status === 'connected',
-    ).length;
     const endorsedContacts = trustContacts.filter(
       (contact) => contact.status === 'endorsed',
     );
-    const score =
-      latestScore?.score ??
-      Math.min(
-        820,
-        420 +
-          (onboardingState?.completedSteps.length ?? 0) * 35 +
-          connectedBanks * 25 +
-          endorsedContacts.length * 15,
-      );
-    const debtRatio =
-      annualizedIncome > 0
-        ? this.clampPercentage((outstandingLoanTotal / annualizedIncome) * 100)
-        : 100;
-    const trustStrength = this.clampPercentage(
-      25 +
-        endorsedContacts.length * 18 +
-        (endorsedContacts.reduce(
-          (sum, contact) => sum + (contact.responseTrustLevel ?? 0),
-          0,
-        ) /
-          Math.max(endorsedContacts.length, 1)) *
-          6,
-    );
-    const incomeReliability = this.clampPercentage(
-      40 +
-        (monthlyIncome >= 350000 ? 25 : monthlyIncome >= 150000 ? 15 : monthlyIncome > 0 ? 5 : 0) +
-        connectedBanks * 10,
-    );
-    const savingsStability = this.clampPercentage(
-      monthlyExpenses > 0
-        ? (savingsBalance / monthlyExpenses) * 25
-        : savingsBalance > 0
-          ? 65
-          : 20,
-    );
+    const assessment = this.buildOrgAssessment({
+      onboardingState,
+      latestScore,
+    });
+    const score = typeof latestScore?.score === 'number' ? latestScore.score : null;
 
     return {
       id: `SIM-${profile?.shareId ?? String(account._id)}`,
       calenId: profile?.shareId ?? '',
       name: account.displayName,
       score,
-      annualIncome,
-      income: incomeReliability,
-      savings: savingsStability,
-      debt: debtRatio,
-      trust: trustStrength,
-      location:
-        [personalProfile?.city, personalProfile?.country]
-          .filter(Boolean)
-          .join(', ') || account.country || 'Unknown',
-      industry: employmentProfile?.jobTitle ?? account.jobTitle ?? 'Unknown',
-      verified: Boolean(account.emailVerifiedAt),
-      product: 'Decision Simulation',
-      stage: 'analysis',
-      riskLevel: this.getRiskLevelFromScore(score),
-      trustEndorsements: endorsedContacts.map((contact) => ({
-        type: contact.relationship,
-        source: contact.fullName,
-        status: 'Verified',
-        date: (contact.respondedAt ?? new Date()).toISOString().slice(0, 10),
-        strength: (contact.responseTrustLevel ?? 0) * 20,
-      })),
-      scoreFactors: [],
-      indicators: [],
+      riskLevel: this.getRiskLevelFromAssessment(score, assessment),
+      affordabilityScore: assessment.affordabilityScore,
+      incomeStabilityScore: assessment.incomeStabilityScore,
+      resilienceScore: assessment.resilienceScore,
+      confidenceScore: assessment.confidenceScore,
+      confidenceLevel: assessment.confidenceLevel,
+      surplusCashEstimate: assessment.surplusCashEstimate,
+      volatilitySignal: assessment.volatilitySignal,
+      scoreStatus: latestScore?.status ?? 'unavailable',
+      recommendation: this.buildOrgRecommendationPreview(score, assessment).outcome,
+      strengths: assessment.strengths,
+      riskFactors:
+        assessment.riskFactors.length > 0
+          ? assessment.riskFactors
+          : endorsedContacts.length === 0
+            ? ['No trust endorsements have been verified yet.']
+            : assessment.riskFactors,
     };
   }
 
@@ -1764,7 +1762,7 @@ export class OrgDashboardService {
   }
 
   private simulateDecisionResults(
-    applicants: WorkspaceApplicant[],
+    applicants: OrgDecisionSimulationCandidate[],
     rules: WorkspaceDecisionRule[],
   ) {
     return applicants.slice(0, 4).map((applicant) => {
@@ -1778,9 +1776,11 @@ export class OrgDashboardService {
         id: applicant.id,
         name: applicant.name,
         score: applicant.score,
-        debt: applicant.debt,
-        trust: applicant.trust,
-        income: applicant.income,
+        affordabilityScore: applicant.affordabilityScore,
+        confidenceScore: applicant.confidenceScore,
+        confidenceLevel: applicant.confidenceLevel,
+        surplusCashEstimate: applicant.surplusCashEstimate,
+        recommendation: applicant.recommendation,
         result,
         rule: triggeredRule
           ? `${triggeredRule.field} ${triggeredRule.operator} ${triggeredRule.value}`
@@ -1806,20 +1806,21 @@ export class OrgDashboardService {
   }
 
   private evaluateRule(
-    applicant: WorkspaceApplicant,
+    applicant: OrgDecisionSimulationCandidate,
     rule: WorkspaceDecisionRule,
   ) {
-    const fieldMap: Record<string, number> = {
+    const fieldMap: Record<string, number | null> = {
       'CALEN Score': applicant.score,
-      'Debt Ratio': applicant.debt,
-      'Trust Network': applicant.trust,
-      'Income Reliability': applicant.income,
-      'Savings Stability': applicant.savings,
+      'Affordability Score': applicant.affordabilityScore,
+      'Income Stability': applicant.incomeStabilityScore,
+      'Resilience Score': applicant.resilienceScore,
+      'Confidence Score': applicant.confidenceScore,
+      'Surplus Cash': applicant.surplusCashEstimate,
     };
     const left = fieldMap[rule.field];
-    const right = Number(String(rule.value).replace(/[^\d.]/g, ''));
+    const right = Number(String(rule.value).replace(/[^0-9.-]/g, ''));
 
-    if (Number.isNaN(left) || Number.isNaN(right)) {
+    if (left == null || Number.isNaN(left) || Number.isNaN(right)) {
       return false;
     }
 
@@ -1828,6 +1829,291 @@ export class OrgDashboardService {
     if (rule.operator === '<') return left < right;
     if (rule.operator === '≤') return left <= right;
     return left === right;
+  }
+
+  private buildOrgAssessment(input: {
+    onboardingState: OnboardingStateDocument | null;
+    latestScore: LatestScorePayload | null;
+  }): OrgAssessmentShape {
+    const financialProfile =
+      (input.onboardingState?.financialProfile as
+        | {
+            monthlyIncome?: number;
+            monthlyExpenses?: number;
+            savingsBalance?: number;
+            outstandingLoanTotal?: number;
+            loanCount?: number;
+          }
+        | null
+        | undefined) ?? null;
+    const employmentProfile =
+      (input.onboardingState?.employmentProfile as
+        | {
+            monthlyIncome?: number;
+            yearsEmployed?: number;
+            employmentType?: string;
+          }
+        | null
+        | undefined) ?? null;
+    const monthlyIncome =
+      employmentProfile?.monthlyIncome ??
+      financialProfile?.monthlyIncome ??
+      null;
+    const monthlyExpenses =
+      typeof financialProfile?.monthlyExpenses === 'number'
+        ? financialProfile.monthlyExpenses
+        : null;
+    const savingsBalance =
+      typeof financialProfile?.savingsBalance === 'number'
+        ? financialProfile.savingsBalance
+        : null;
+    const outstandingLoanTotal =
+      typeof financialProfile?.outstandingLoanTotal === 'number'
+        ? financialProfile.outstandingLoanTotal
+        : null;
+    const surplusCashEstimate =
+      monthlyIncome == null
+        ? null
+        : Math.round(monthlyIncome - (monthlyExpenses ?? 0));
+    const incomeStabilityScore =
+      this.getScoreComponentScore(input.latestScore, 'income_reliability') ??
+      this.clampPercentage(
+        40 +
+          Math.min((employmentProfile?.yearsEmployed ?? 0) * 10, 30) +
+          (monthlyIncome != null && monthlyIncome >= 350000
+            ? 20
+            : monthlyIncome != null && monthlyIncome >= 150000
+              ? 10
+              : 0) +
+          (employmentProfile?.employmentType === 'full_time' ? 10 : 0),
+      );
+    const resilienceScore =
+      this.getScoreComponentScore(input.latestScore, 'balance_resilience') ??
+      this.clampPercentage(
+        monthlyExpenses != null && monthlyExpenses > 0
+          ? ((savingsBalance ?? 0) / monthlyExpenses) * 25
+          : (savingsBalance ?? 0) > 0
+            ? 65
+            : 20,
+      );
+    const cashFlowStabilityScore =
+      this.getScoreComponentScore(input.latestScore, 'cash_flow_stability') ??
+      this.clampPercentage(
+        monthlyIncome != null && monthlyIncome > 0
+          ? 50 + (((monthlyIncome - (monthlyExpenses ?? 0)) / monthlyIncome) * 50)
+          : 30,
+      );
+    const spendingDisciplineScore =
+      this.getScoreComponentScore(input.latestScore, 'spending_discipline') ??
+      this.clampPercentage(
+        monthlyIncome != null && monthlyIncome > 0 && monthlyExpenses != null
+          ? 100 - Math.min(80, (monthlyExpenses / monthlyIncome) * 100)
+          : 45,
+      );
+    const confidenceScore =
+      typeof input.latestScore?.confidence?.score === 'number'
+        ? input.latestScore.confidence.score
+        : null;
+    const confidenceLevel =
+      typeof input.latestScore?.confidence?.level === 'string'
+        ? input.latestScore.confidence.level
+        : null;
+    const behaviouralAffordabilityBase = this.clampPercentage(
+      Math.round(
+        ((cashFlowStabilityScore ?? 50) * 0.45) +
+          ((spendingDisciplineScore ?? 50) * 0.25) +
+          ((resilienceScore ?? 50) * 0.3),
+      ),
+    );
+    const affordabilityScore =
+      monthlyIncome == null || surplusCashEstimate == null
+        ? behaviouralAffordabilityBase
+        : this.clampPercentage(
+            Math.round(
+              behaviouralAffordabilityBase * 0.55 +
+                this.getAffordabilityScoreFromSurplus(
+                  surplusCashEstimate,
+                  monthlyIncome,
+                ) *
+                  0.45,
+            ),
+          );
+    const debtPressureRatio =
+      monthlyIncome == null || monthlyIncome <= 0
+        ? null
+        : ((outstandingLoanTotal ?? 0) / 12) / monthlyIncome;
+    const obligationConsistencyScore = this.getScoreComponentScore(
+      input.latestScore,
+      'obligation_consistency',
+    );
+    const rawVolatilityScore = this.getScoreComponentScore(
+      input.latestScore,
+      'financial_volatility',
+    );
+    const debtPressureIndicator =
+      obligationConsistencyScore != null && obligationConsistencyScore < 40
+        ? 'High'
+        : debtPressureRatio != null && debtPressureRatio >= 0.45
+          ? 'High'
+          : debtPressureRatio != null && debtPressureRatio >= 0.22
+            ? 'Medium'
+            : typeof financialProfile?.loanCount === 'number' &&
+                financialProfile.loanCount > 2
+              ? 'Medium'
+              : 'Low';
+    const volatilitySignal =
+      rawVolatilityScore != null && rawVolatilityScore >= 65
+        ? 'Volatile'
+        : rawVolatilityScore != null && rawVolatilityScore >= 40
+          ? 'Moderate'
+          : 'Stable';
+    const strengths: string[] = [];
+    const riskFactors: string[] = [];
+
+    if (affordabilityScore >= 72) {
+      strengths.push('Estimated monthly headroom remains comfortably positive.');
+    }
+    if ((incomeStabilityScore ?? 0) >= 70) {
+      strengths.push('Income patterns appear stable across the observed period.');
+    }
+    if ((resilienceScore ?? 0) >= 70) {
+      strengths.push('Balance behaviour suggests healthy financial resilience.');
+    }
+    if (confidenceLevel === 'high') {
+      strengths.push('Score confidence is high based on the available bank history.');
+    }
+
+    if (affordabilityScore < 55) {
+      riskFactors.push('Estimated monthly headroom is tight relative to expenses.');
+    }
+    if (debtPressureIndicator === 'High') {
+      riskFactors.push('Debt pressure appears elevated relative to available income.');
+    }
+    if (volatilitySignal === 'Volatile') {
+      riskFactors.push('Cash-flow patterns are more volatile than ideal.');
+    }
+    if (confidenceLevel === 'low') {
+      riskFactors.push('Score confidence is low and should be treated cautiously.');
+    }
+    if (
+      input.latestScore?.anomalyFlags.some((flag) => flag.severity === 'high')
+    ) {
+      riskFactors.push('High-severity anomalies were detected in the score evidence.');
+    }
+
+    return {
+      affordabilityScore,
+      incomeStabilityScore,
+      resilienceScore,
+      cashFlowStabilityScore,
+      spendingDisciplineScore,
+      confidenceScore,
+      confidenceLevel,
+      debtPressureIndicator,
+      surplusCashEstimate,
+      volatilitySignal,
+      strengths:
+        strengths.length > 0
+          ? strengths.slice(0, 4)
+          : ['Behavioural score evidence is available for review.'],
+      riskFactors:
+        riskFactors.length > 0
+          ? riskFactors.slice(0, 4)
+          : ['No material behavioural risks were triggered automatically.'],
+      scoreStatus: input.latestScore?.status ?? 'unavailable',
+      anomalyFlags: Array.isArray(input.latestScore?.anomalyFlags)
+        ? input.latestScore.anomalyFlags
+        : [],
+      generatedAt: new Date(),
+    };
+  }
+
+  private buildOrgRecommendationPreview(
+    score: number | null,
+    assessment: OrgAssessmentShape,
+  ) {
+    if (score == null || assessment.scoreStatus === 'insufficient_data') {
+      return {
+        outcome: 'review' as const,
+        summary: 'More score evidence is needed before a clean automated decision can be made.',
+      };
+    }
+
+    if ((assessment.affordabilityScore ?? 0) < 40) {
+      return {
+        outcome: 'decline' as const,
+        summary: 'Affordability signals are materially below the current comfort range.',
+      };
+    }
+
+    if (
+      assessment.confidenceLevel === 'low' ||
+      assessment.debtPressureIndicator === 'High' ||
+      assessment.volatilitySignal === 'Volatile' ||
+      assessment.anomalyFlags.some((flag) => flag.severity === 'high')
+    ) {
+      return {
+        outcome: 'review' as const,
+        summary: 'Manual review is recommended because the behavioural evidence carries elevated uncertainty or risk.',
+      };
+    }
+
+    return {
+      outcome: 'approve' as const,
+      summary: 'Behavioural signals are currently supportive of an approval path.',
+    };
+  }
+
+  private getRiskLevelFromAssessment(
+    score: number | null,
+    assessment: OrgAssessmentShape,
+  ) {
+    if (typeof score === 'number') {
+      return this.getRiskLevelFromScore(score);
+    }
+
+    if (
+      (assessment.affordabilityScore ?? 0) < 40 ||
+      assessment.debtPressureIndicator === 'High' ||
+      assessment.volatilitySignal === 'Volatile'
+    ) {
+      return 'High';
+    }
+
+    if (
+      (assessment.affordabilityScore ?? 0) < 60 ||
+      assessment.confidenceLevel === 'low'
+    ) {
+      return 'Moderate';
+    }
+
+    return 'Low';
+  }
+
+  private getScoreComponentScore(
+    latestScore: LatestScorePayload | null,
+    key: string,
+  ) {
+    const component = latestScore?.components.find((entry) => entry.key === key);
+    return typeof component?.score === 'number' ? component.score : null;
+  }
+
+  private getAffordabilityScoreFromSurplus(
+    surplusCashEstimate: number,
+    monthlyIncome: number,
+  ) {
+    if (monthlyIncome <= 0) {
+      return 0;
+    }
+
+    const surplusRatio = surplusCashEstimate / monthlyIncome;
+
+    if (surplusRatio >= 0.35) return 92;
+    if (surplusRatio >= 0.2) return 78;
+    if (surplusRatio >= 0.1) return 64;
+    if (surplusRatio >= 0) return 48;
+    if (surplusRatio >= -0.1) return 28;
+    return 12;
   }
 
   private buildTrustSignalsPayload(applicants: WorkspaceApplicant[]) {

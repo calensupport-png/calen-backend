@@ -31,10 +31,7 @@ import {
   TrustContact,
   TrustContactSchema,
 } from '../onboarding/schemas/trust-contact.schema';
-import {
-  ScoreSnapshot,
-  ScoreSnapshotSchema,
-} from '../dashboard/schemas/score-snapshot.schema';
+import { ScoresModule } from '../scores/scores.module';
 import { OrgDashboardController } from './org-dashboard.controller';
 import { OrgDashboardService } from './org-dashboard.service';
 import {
@@ -47,6 +44,7 @@ import {
     AccountsModule,
     AuthModule,
     OrganizationsModule,
+    ScoresModule,
     MongooseModule.forFeature([
       { name: Notification.name, schema: NotificationSchema },
       { name: UserSettings.name, schema: UserSettingsSchema },
@@ -73,10 +71,6 @@ import {
       {
         name: TrustContact.name,
         schema: TrustContactSchema,
-      },
-      {
-        name: ScoreSnapshot.name,
-        schema: ScoreSnapshotSchema,
       },
     ]),
   ],
