@@ -13,7 +13,9 @@ import { OnboardingState } from '../onboarding/schemas/onboarding-state.schema';
 import { TrustContact } from '../onboarding/schemas/trust-contact.schema';
 import { OrganizationInvitation } from '../org-onboarding/schemas/organization-invitation.schema';
 import { OrganizationVerification } from '../org-onboarding/schemas/organization-verification.schema';
+import { PassportAccessService } from '../passport/passport-access.service';
 import { ScoresService } from '../scores/scores.service';
+import { MonitoringWebhookDelivery } from '../monitoring/schemas/monitoring-webhook-delivery.schema';
 import { OrgDashboardService } from './org-dashboard.service';
 import { OrganizationPipelineApplicant } from './schemas/organization-pipeline-applicant.schema';
 
@@ -39,6 +41,7 @@ describe('OrgDashboardService', () => {
   const onboardingStateModel = createModelMock();
   const bankConnectionModel = createModelMock();
   const trustContactModel = createModelMock();
+  const monitoringWebhookDeliveryModel = createModelMock();
   const organizationsService = {
     findByIdOrThrow: jest.fn(),
     updateOrganizationProfile: jest.fn(),
@@ -51,6 +54,9 @@ describe('OrgDashboardService', () => {
   };
   const scoresService = {
     getLatestScore: jest.fn(),
+  };
+  const passportAccessService = {
+    findAccessibleIndividualByShareId: jest.fn(),
   };
 
   const orgUser: AuthenticatedUser = {
@@ -132,6 +138,11 @@ describe('OrgDashboardService', () => {
         documentType: 'certificate_of_incorporation',
         referenceNumber: 'COI-100',
         submittedAt: new Date('2026-03-27T10:00:00.000Z'),
+      }),
+    });
+    monitoringWebhookDeliveryModel.find.mockReturnValue({
+      sort: jest.fn().mockReturnValue({
+        limit: jest.fn().mockResolvedValue([]),
       }),
     });
     notificationModel.find.mockReturnValue({
@@ -225,7 +236,7 @@ describe('OrgDashboardService', () => {
       },
       generatedAt: new Date('2026-03-31T00:00:00.000Z'),
     });
-    accountsService.findIndividualByShareId.mockResolvedValue({
+    const accessibleAccount = {
       _id: '507f1f77bcf86cd799439021',
       displayName: 'Amina Yusuf',
       emailVerifiedAt: new Date('2026-03-01T10:00:00.000Z'),
@@ -235,7 +246,11 @@ describe('OrgDashboardService', () => {
         shareId: 'CALEN-ABCD-1234',
         onboardingStatus: 'completed',
       },
-    });
+    };
+    accountsService.findIndividualByShareId.mockResolvedValue(accessibleAccount);
+    passportAccessService.findAccessibleIndividualByShareId.mockResolvedValue(
+      accessibleAccount,
+    );
     userSettingsModel.findOneAndUpdate.mockResolvedValue({
       marketingEmails: true,
       productUpdates: true,
@@ -253,6 +268,10 @@ describe('OrgDashboardService', () => {
         {
           provide: OrganizationsService,
           useValue: organizationsService,
+        },
+        {
+          provide: PassportAccessService,
+          useValue: passportAccessService,
         },
         {
           provide: ScoresService,
@@ -289,6 +308,10 @@ describe('OrgDashboardService', () => {
         {
           provide: getModelToken(TrustContact.name),
           useValue: trustContactModel,
+        },
+        {
+          provide: getModelToken(MonitoringWebhookDelivery.name),
+          useValue: monitoringWebhookDeliveryModel,
         },
       ],
     }).compile();
@@ -338,6 +361,9 @@ describe('OrgDashboardService', () => {
 
     expect(Array.isArray(result.apiIntegrations.apiKeys)).toBe(true);
     expect(Array.isArray(result.apiIntegrations.recentLogs)).toBe(true);
+    expect(Array.isArray(result.apiIntegrations.webhooks.recentDeliveries)).toBe(
+      true,
+    );
   });
 
   it('returns real CALEN risk analysis data for the organization', async () => {
@@ -391,6 +417,27 @@ describe('OrgDashboardService', () => {
     expect(result.decisionEngine.appliedFilters).toEqual({
       calenId: 'CALEN-ABCD-1234',
     });
+  });
+
+  it('hides applicant details when no active Passport grant exists', async () => {
+    passportAccessService.findAccessibleIndividualByShareId.mockResolvedValue(
+      null,
+    );
+
+    const search = await service.getProfileSearch(orgUser, {
+      calenId: 'CALEN-ABCD-1234',
+    });
+    const riskAnalysis = await service.getRiskAnalysis(orgUser, {
+      calenId: 'CALEN-ABCD-1234',
+    });
+    const decisionEngine = await service.getDecisionEngine(orgUser, {
+      calenId: 'CALEN-ABCD-1234',
+    });
+
+    expect(search.search.resultCount).toBe(0);
+    expect(search.search.profiles).toHaveLength(0);
+    expect(riskAnalysis.riskAnalysis.profile).toBeNull();
+    expect(decisionEngine.decisionEngine.simulationResults).toHaveLength(0);
   });
 
   it('returns trust signal analytics from real pipeline applicants only', async () => {

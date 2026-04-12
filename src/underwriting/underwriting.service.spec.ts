@@ -1,4 +1,4 @@
-import { NotFoundException } from '@nestjs/common';
+import { ForbiddenException, NotFoundException } from '@nestjs/common';
 import { getModelToken } from '@nestjs/mongoose';
 import { Test } from '@nestjs/testing';
 import { Types } from 'mongoose';
@@ -7,7 +7,9 @@ import { BankConnection } from '../onboarding/schemas/bank-connection.schema';
 import { OnboardingState } from '../onboarding/schemas/onboarding-state.schema';
 import { TrustContact } from '../onboarding/schemas/trust-contact.schema';
 import { OrganizationsService } from '../organizations/organizations.service';
+import { PassportAccessService } from '../passport/passport-access.service';
 import { ScoresService } from '../scores/scores.service';
+import { VerifyService } from '../verify/verify.service';
 import { UnderwritingCase } from './schemas/underwriting-case.schema';
 import { UnderwritingService } from './underwriting.service';
 
@@ -17,6 +19,45 @@ function createModelMock() {
     find: jest.fn(),
     findOneAndUpdate: jest.fn(),
     create: jest.fn(),
+  };
+}
+
+function createVerificationSnapshot(overrides: Record<string, unknown> = {}) {
+  return {
+    snapshotId: 'verify-snapshot-1',
+    calenId: 'CALEN-ABCD-1234',
+    subjectName: 'Ada Lovelace',
+    engineVersion: 'v1.phase2',
+    accountAuthenticityStatus: 'verified',
+    ownershipConfidence: 'high',
+    ownershipConfidenceScore: 88,
+    activeAccountStatus: 'active',
+    incomePatternConfirmation: 'confirmed',
+    cashflowConsistencyIndicator: 'consistent',
+    dataQuality: 'high',
+    confidenceLevel: 'high',
+    confidenceScore: 84,
+    verificationOutcome: 'verified',
+    summary:
+      'Verification signals are strong enough to treat the profile as verified.',
+    strengths: [
+      'Identity verification and active bank connectivity support account authenticity.',
+    ],
+    cautionFlags: [],
+    evidence: {
+      identityVerificationStatus: 'approved',
+      completedStepCount: 5,
+      connectedAccountCount: 2,
+      activeAccountCount: 1,
+      mostRecentBankSyncAt: new Date('2026-04-10T10:00:00.000Z'),
+      observedMonths: 6,
+      transactionCount: 95,
+      bankProviders: ['mono'],
+    },
+    generatedAt: new Date('2026-04-10T12:00:00.000Z'),
+    createdAt: new Date('2026-04-10T12:00:00.000Z'),
+    updatedAt: new Date('2026-04-10T12:00:00.000Z'),
+    ...overrides,
   };
 }
 
@@ -36,6 +77,13 @@ describe('UnderwritingService', () => {
   const scoresService = {
     getLatestScore: jest.fn(),
   };
+  const verifyService = {
+    getLatestSnapshotForUser: jest.fn(),
+    generateSnapshotForCalenId: jest.fn(),
+  };
+  const passportAccessService = {
+    assertAccessibleIndividualByShareId: jest.fn(),
+  };
   const user = {
     id: '507f1f77bcf86cd799439011',
     accountType: 'organisation',
@@ -50,7 +98,9 @@ describe('UnderwritingService', () => {
         UnderwritingService,
         { provide: AccountsService, useValue: accountsService },
         { provide: OrganizationsService, useValue: organizationsService },
+        { provide: PassportAccessService, useValue: passportAccessService },
         { provide: ScoresService, useValue: scoresService },
+        { provide: VerifyService, useValue: verifyService },
         {
           provide: getModelToken(UnderwritingCase.name),
           useValue: underwritingCaseModel,
@@ -83,6 +133,21 @@ describe('UnderwritingService', () => {
         },
       ]),
     });
+    verifyService.getLatestSnapshotForUser.mockResolvedValue({
+      verificationSnapshot: createVerificationSnapshot(),
+    });
+    verifyService.generateSnapshotForCalenId.mockResolvedValue({
+      verificationSnapshot: createVerificationSnapshot(),
+    });
+    passportAccessService.assertAccessibleIndividualByShareId.mockResolvedValue(
+      {
+        _id: new Types.ObjectId('507f1f77bcf86cd799439012'),
+        displayName: 'Ada Lovelace',
+        emailVerifiedAt: new Date('2026-04-01T10:00:00.000Z'),
+        country: 'United Kingdom',
+        jobTitle: 'Founder',
+      },
+    );
     trustContactModel.find.mockReturnValue({
       sort: jest.fn().mockResolvedValue([]),
     });
@@ -155,6 +220,7 @@ describe('UnderwritingService', () => {
     });
 
     expect(result.underwritingCase.obligationContext.requestedTermMonths).toBe(24);
+    expect(result.underwritingCase.verificationSnapshot?.verificationOutcome).toBe('verified');
     expect(result.underwritingCase.underwritingAssessment.affordabilityScore).toBeGreaterThanOrEqual(70);
     expect(result.underwritingCase.underwritingAssessment.debtPressureIndicator).toBe('Medium');
     expect(result.underwritingCase.recommendation.outcome).toBe('approve_with_conditions');
@@ -294,6 +360,89 @@ describe('UnderwritingService', () => {
     });
     expect(result.underwritingCase.underwritingAssessment.surplusCashEstimate).toBe(1050);
     expect(result.underwritingCase.timeline[0].type).toBe('case_context_updated');
+  });
+
+  it('escalates to manual review when the attached verification snapshot cannot verify the profile', async () => {
+    verifyService.getLatestSnapshotForUser.mockResolvedValue({
+      verificationSnapshot: createVerificationSnapshot({
+        verificationOutcome: 'unable_to_verify',
+        confidenceLevel: 'low',
+        ownershipConfidence: 'low',
+        dataQuality: 'low',
+        summary:
+          'The available signals are not strong enough to verify this profile confidently.',
+      }),
+    });
+    accountsService.findIndividualByShareId.mockResolvedValue({
+      _id: new Types.ObjectId('507f1f77bcf86cd799439015'),
+      displayName: 'Dorothy Vaughan',
+      emailVerifiedAt: new Date('2026-04-01T10:00:00.000Z'),
+      country: 'United Kingdom',
+      jobTitle: 'Operations Lead',
+    });
+    organizationsService.findByIdOrThrow.mockResolvedValue({
+      _id: new Types.ObjectId(user.organizationId),
+      onboardingData: {
+        riskPolicy: {
+          minimumScore: 650,
+          maxExposureAmount: 50000,
+          defaultDecisionMode: 'auto_decision',
+        },
+      },
+    });
+    onboardingStateModel.findOne.mockResolvedValue({
+      personalProfile: {
+        city: 'Leeds',
+        country: 'United Kingdom',
+      },
+      employmentProfile: {
+        employerName: 'Northstar Labs',
+        jobTitle: 'Operations Lead',
+        monthlyIncome: 6500,
+      },
+      financialProfile: {
+        monthlyIncome: 6500,
+        monthlyExpenses: 2200,
+        loanCount: 1,
+        outstandingLoanTotal: 4000,
+      },
+    });
+    scoresService.getLatestScore.mockResolvedValue({
+      score: 742,
+      composite: 74.2,
+      bandKey: 'strong',
+      status: 'ready',
+      engineVersion: 'v1.phase1',
+      confidence: { level: 'high', score: 81 },
+      explanations: ['Income patterns have been consistent across most observed months.'],
+      reasonCodes: ['income_consistency_strong'],
+      anomalyFlags: [],
+      components: [
+        { key: 'income_reliability', label: 'Income Reliability', score: 82, weight: 0.25, metrics: {}, reasons: [] },
+        { key: 'cash_flow_stability', label: 'Cash Flow Stability', score: 78, weight: 0.2, metrics: {}, reasons: [] },
+        { key: 'balance_resilience', label: 'Balance Resilience', score: 72, weight: 0.2, metrics: {}, reasons: [] },
+        { key: 'obligation_consistency', label: 'Obligation Consistency', score: 70, weight: 0.15, metrics: {}, reasons: [] },
+        { key: 'spending_discipline', label: 'Spending Discipline', score: 74, weight: 0.1, metrics: {}, reasons: [] },
+        { key: 'financial_volatility', label: 'Financial Volatility', score: 28, weight: 0.1, metrics: {}, reasons: [] },
+      ],
+      generatedAt: new Date('2026-04-10T12:00:00.000Z'),
+    });
+
+    const result = await service.createCase(user as any, {
+      calenId: 'CALEN-VERIFY-4321',
+      productType: 'Working Capital Advance',
+      requestedAmount: 12000,
+      requestedTermMonths: 18,
+      monthlyObligationAmount: 650,
+    });
+
+    expect(result.underwritingCase.recommendation.outcome).toBe('review');
+    expect(result.underwritingCase.recommendation.policyTriggers).toContain(
+      'verification_unable_to_verify',
+    );
+    expect(result.underwritingCase.recommendation.manualReviewReasons).toContain(
+      'Verification signals are not strong enough to rely on this profile without manual review.',
+    );
   });
 
   it('requires an override reason before approving a conditional case', async () => {
@@ -589,13 +738,38 @@ describe('UnderwritingService', () => {
       _id: new Types.ObjectId(user.organizationId),
       onboardingData: {},
     });
-    accountsService.findIndividualByShareId.mockResolvedValue(null);
+    passportAccessService.assertAccessibleIndividualByShareId.mockRejectedValueOnce(
+      new NotFoundException({
+        code: 'PASSPORT_PROFILE_NOT_FOUND',
+        message: 'No CALEN profile matched that identifier.',
+      }),
+    );
 
     await expect(
       service.createCase(user as any, {
         calenId: 'CALEN-FFFF-0000',
       }),
     ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('blocks case creation when no active Passport grant exists', async () => {
+    organizationsService.findByIdOrThrow.mockResolvedValue({
+      _id: new Types.ObjectId(user.organizationId),
+      onboardingData: {},
+    });
+    passportAccessService.assertAccessibleIndividualByShareId.mockRejectedValueOnce(
+      new ForbiddenException({
+        code: 'PASSPORT_ACCESS_REQUIRED',
+        message:
+          'An active Passport grant is required before this organisation can access that CALEN profile.',
+      }),
+    );
+
+    await expect(
+      service.createCase(user as any, {
+        calenId: 'CALEN-ABCD-1234',
+      }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
   });
 
   it('exports a stored decision record from the underwriting snapshot', async () => {
@@ -632,6 +806,7 @@ describe('UnderwritingService', () => {
         status: 'ready',
         confidenceLevel: 'high',
       },
+      verificationSnapshot: createVerificationSnapshot(),
       underwritingAssessment: {
         affordabilityScore: 81,
         incomeStabilityScore: 82,
@@ -680,6 +855,7 @@ describe('UnderwritingService', () => {
     expect(result.export.fileName).toBe('UW-ABCD1234-decision-record.json');
     expect(result.export.decisionRecord.caseId).toBe('UW-ABCD1234');
     expect(result.export.decisionRecord.underwritingAssessment.affordabilityScore).toBe(81);
+    expect(result.export.decisionRecord.verificationSnapshot?.verificationOutcome).toBe('verified');
     expect(result.export.decisionRecord.recommendation.outcome).toBe('approve_with_conditions');
     expect(result.export.decisionRecord.reviewerNotes).toBe('Needs final reviewer sign-off.');
   });

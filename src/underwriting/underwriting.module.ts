@@ -16,6 +16,8 @@ import {
   TrustContactSchema,
 } from '../onboarding/schemas/trust-contact.schema';
 import { ScoresModule } from '../scores/scores.module';
+import { PassportAccessModule } from '../passport/passport-access.module';
+import { VerifyModule } from '../verify/verify.module';
 import {
   UnderwritingCase,
   UnderwritingCaseSchema,
@@ -28,7 +30,9 @@ import { UnderwritingService } from './underwriting.service';
     AccountsModule,
     AuthModule,
     OrganizationsModule,
+    PassportAccessModule,
     ScoresModule,
+    VerifyModule,
     MongooseModule.forFeature([
       { name: UnderwritingCase.name, schema: UnderwritingCaseSchema },
       { name: OnboardingState.name, schema: OnboardingStateSchema },

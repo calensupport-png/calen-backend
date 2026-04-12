@@ -97,6 +97,27 @@ class UpdateOrgDashboardIntegrationPreferencesDto {
   @IsBoolean()
   enableWebhooks?: boolean;
 
+  @ApiPropertyOptional({ example: 'https://org.example.com/calen/webhooks' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(240)
+  webhookUrl?: string;
+
+  @ApiPropertyOptional({ example: 'whsec_monitoring_123' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(240)
+  webhookSecret?: string;
+
+  @ApiPropertyOptional({
+    type: [String],
+    example: ['monitoring_alert_triggered', 'monitoring_alert_resolved'],
+  })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  webhookSubscriptions?: string[];
+
   @ApiPropertyOptional({ type: [String], example: ['score', 'profile_share'] })
   @IsOptional()
   @IsArray()

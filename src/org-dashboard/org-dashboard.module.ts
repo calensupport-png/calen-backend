@@ -32,6 +32,11 @@ import {
   TrustContactSchema,
 } from '../onboarding/schemas/trust-contact.schema';
 import { ScoresModule } from '../scores/scores.module';
+import { PassportAccessModule } from '../passport/passport-access.module';
+import {
+  MonitoringWebhookDelivery,
+  MonitoringWebhookDeliverySchema,
+} from '../monitoring/schemas/monitoring-webhook-delivery.schema';
 import { OrgDashboardController } from './org-dashboard.controller';
 import { OrgDashboardService } from './org-dashboard.service';
 import {
@@ -44,6 +49,7 @@ import {
     AccountsModule,
     AuthModule,
     OrganizationsModule,
+    PassportAccessModule,
     ScoresModule,
     MongooseModule.forFeature([
       { name: Notification.name, schema: NotificationSchema },
@@ -71,6 +77,10 @@ import {
       {
         name: TrustContact.name,
         schema: TrustContactSchema,
+      },
+      {
+        name: MonitoringWebhookDelivery.name,
+        schema: MonitoringWebhookDeliverySchema,
       },
     ]),
   ],

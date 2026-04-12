@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
@@ -11,6 +12,7 @@ import { AccountsService } from '../accounts/accounts.service';
 import { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
 import { AccountType } from '../common/enums/account-type.enum';
 import { OrganizationsService } from '../organizations/organizations.service';
+import { PassportAccessService } from '../passport/passport-access.service';
 import {
   BankConnection,
   BankConnectionDocument,
@@ -24,6 +26,10 @@ import {
   TrustContactDocument,
 } from '../onboarding/schemas/trust-contact.schema';
 import { ScoresService } from '../scores/scores.service';
+import {
+  VerificationSnapshotView,
+  VerifyService,
+} from '../verify/verify.service';
 import { CreateUnderwritingCaseDto } from './dto/create-underwriting-case.dto';
 import { UpdateUnderwritingCaseNotesDto } from './dto/update-underwriting-case-notes.dto';
 import { UpdateUnderwritingCaseStageDto } from './dto/update-underwriting-case-stage.dto';
@@ -31,6 +37,13 @@ import {
   UnderwritingCase,
   UnderwritingCaseDocument,
 } from './schemas/underwriting-case.schema';
+import {
+  buildUnderwritingAssessment,
+  buildUnderwritingScoreSnapshot,
+  type UnderwritingAssessmentShape,
+  type UnderwritingObligationContextShape,
+  type UnderwritingScoreSnapshotShape,
+} from './underwriting-shared';
 
 type OrganizationShape = {
   _id?: unknown;
@@ -43,58 +56,12 @@ type UnderwritingOutcome =
   | 'review'
   | 'decline';
 
-type UnderwritingScoreSnapshotShape = {
-  score: number | null;
-  composite: number | null;
-  band: string | null;
-  status: string;
-  engineVersion: string | null;
-  confidenceLevel: string | null;
-  confidenceScore: number | null;
-  explanations: string[];
-  reasonCodes: string[];
-  anomalyFlags: Array<{
-    code: string;
-    severity: string;
-    detail?: string;
-  }>;
-  components: Array<{
-    key: string;
-    label: string;
-    score: number;
-    weight: number;
-    metrics: Record<string, number | null>;
-    reasons: string[];
-  }>;
-  generatedAt: Date | null;
-};
-
 type UnderwritingPolicySnapshotShape = {
   minimumScore: number | null;
   maxExposureAmount: number | null;
   defaultDecisionMode: string;
   triggeredRules: string[];
   decisionRules: UnderwritingDecisionRuleMatchShape[];
-};
-
-type UnderwritingObligationContextShape = {
-  requestedAmount: number | null;
-  requestedTermMonths: number | null;
-  monthlyObligationAmount: number | null;
-  productCategory: string | null;
-  decisionPurpose: string | null;
-};
-
-type UnderwritingAssessmentShape = {
-  affordabilityScore: number | null;
-  incomeStabilityScore: number | null;
-  resilienceScore: number | null;
-  debtPressureIndicator: 'Low' | 'Medium' | 'High';
-  surplusCashEstimate: number | null;
-  volatilitySignal: 'Stable' | 'Moderate' | 'Volatile';
-  strengths: string[];
-  riskFactors: string[];
-  generatedAt: Date;
 };
 
 type WorkspaceDecisionRuleShape = {
@@ -113,10 +80,14 @@ type UserLike = Awaited<ReturnType<AccountsService['findUserByIdOrThrow']>>;
 
 @Injectable()
 export class UnderwritingService {
+  private readonly logger = new Logger(UnderwritingService.name);
+
   constructor(
     private readonly accountsService: AccountsService,
     private readonly organizationsService: OrganizationsService,
+    private readonly passportAccessService: PassportAccessService,
     private readonly scoresService: ScoresService,
+    private readonly verifyService: VerifyService,
     @InjectModel(UnderwritingCase.name)
     private readonly underwritingCaseModel: Model<UnderwritingCaseDocument>,
     @InjectModel(OnboardingState.name)
@@ -196,16 +167,11 @@ export class UnderwritingService {
       );
     }
 
-    const account = await this.accountsService.findIndividualByShareId(
-      normalizedCalenId,
-    );
-
-    if (!account) {
-      throw new NotFoundException({
-        code: 'UNDERWRITING_PROFILE_NOT_FOUND',
-        message: 'No CALEN profile matched that identifier.',
-      });
-    }
+    const account =
+      await this.passportAccessService.assertAccessibleIndividualByShareId(
+        user,
+        normalizedCalenId,
+      );
 
     const subjectUserId = this.toObjectId(String(account._id));
     const [onboardingState, bankConnections, trustContacts, latestScore] =
@@ -236,11 +202,16 @@ export class UnderwritingService {
       obligationContext,
       applicantSummary,
     );
+    const verificationSnapshot = await this.getCaseVerificationSnapshot(
+      String(account._id),
+      normalizedCalenId,
+    );
     const recommendation = this.buildRecommendation(
       scoreSnapshot,
       policySnapshot,
       underwritingAssessment,
       obligationContext,
+      verificationSnapshot,
       decisionRules,
     );
     const initialStage = this.getInitialStageFromRecommendation(
@@ -268,6 +239,7 @@ export class UnderwritingService {
       policySnapshot,
       obligationContext,
       underwritingAssessment,
+      verificationSnapshot,
       recommendation,
       timeline: [
         {
@@ -287,6 +259,17 @@ export class UnderwritingService {
             scoreSnapshot.score != null
               ? `Attached score ${scoreSnapshot.score} (${scoreSnapshot.band ?? 'unbanded'}).`
               : 'A reviewer will need to assess the case with partial evidence.',
+          actorId: user.id,
+          createdAt: new Date(),
+        },
+        {
+          type: 'verification_attached',
+          title: verificationSnapshot
+            ? 'Latest CALEN Verify snapshot attached'
+            : 'Case opened without a verification snapshot',
+          detail: verificationSnapshot
+            ? `Attached verification outcome ${verificationSnapshot.verificationOutcome}.`
+            : 'Verification evidence was unavailable when the case was opened.',
           actorId: user.id,
           createdAt: new Date(),
         },
@@ -351,6 +334,7 @@ export class UnderwritingService {
           obligationContext: underwritingCase.obligationContext,
           scoreSnapshot: underwritingCase.scoreSnapshot,
           underwritingAssessment: underwritingCase.underwritingAssessment,
+          verificationSnapshot: underwritingCase.verificationSnapshot ?? null,
           policySnapshot: underwritingCase.policySnapshot,
           recommendation: underwritingCase.recommendation,
           reviewerNotes: underwritingCase.notes ?? '',
@@ -525,11 +509,16 @@ export class UnderwritingService {
       obligationContext,
       applicantSummary,
     );
+    const verificationSnapshot = await this.getCaseVerificationSnapshot(
+      String(existingCase.subjectUserId),
+      existingCase.calenId,
+    );
     const recommendation = this.buildRecommendation(
       existingCase.scoreSnapshot as UnderwritingScoreSnapshotShape,
       policySnapshot,
       underwritingAssessment,
       obligationContext,
+      verificationSnapshot,
       decisionRules,
     );
     const nextStage = this.getInitialStageFromRecommendation(
@@ -555,6 +544,7 @@ export class UnderwritingService {
           policySnapshot,
           obligationContext,
           underwritingAssessment,
+          verificationSnapshot,
           recommendation,
         },
         $push: {
@@ -706,54 +696,19 @@ export class UnderwritingService {
   private buildScoreSnapshot(
     latestScore: Awaited<ReturnType<ScoresService['getLatestScore']>>,
   ): UnderwritingScoreSnapshotShape {
+    const scoreSnapshot = buildUnderwritingScoreSnapshot(latestScore);
+
     if (!latestScore) {
       return {
-        score: null,
-        composite: null,
-        band: null,
+        ...scoreSnapshot,
         status: 'pending_generation',
-        engineVersion: null,
-        confidenceLevel: null,
-        confidenceScore: null,
         explanations: [
           'No durable CALEN score was available when this underwriting case was opened.',
         ],
-        reasonCodes: ['score_unavailable'],
-        anomalyFlags: [],
-        components: [],
-        generatedAt: null,
       };
     }
 
-    return {
-      score: latestScore.score,
-      composite: latestScore.composite,
-      band: latestScore.bandKey,
-      status: latestScore.status,
-      engineVersion: latestScore.engineVersion,
-      confidenceLevel: latestScore.confidence?.level ?? null,
-      confidenceScore: latestScore.confidence?.score ?? null,
-      explanations: Array.isArray(latestScore.explanations)
-        ? latestScore.explanations
-        : [],
-      reasonCodes: Array.isArray(latestScore.reasonCodes)
-        ? latestScore.reasonCodes
-        : [],
-      anomalyFlags: Array.isArray(latestScore.anomalyFlags)
-        ? latestScore.anomalyFlags
-        : [],
-      components: Array.isArray(latestScore.components)
-        ? latestScore.components.map((component) => ({
-            key: component.key,
-            label: component.label,
-            score: component.score,
-            weight: component.weight,
-            metrics: component.metrics,
-            reasons: component.reasons,
-          }))
-        : [],
-      generatedAt: latestScore.generatedAt ?? null,
-    };
+    return scoreSnapshot;
   }
 
   private buildPolicySnapshot(
@@ -806,190 +761,40 @@ export class UnderwritingService {
     obligationContext: UnderwritingObligationContextShape,
     applicantSummary: ReturnType<UnderwritingService['buildApplicantSummary']>,
   ): UnderwritingAssessmentShape {
-    const employmentProfile =
-      (onboardingState?.employmentProfile as
-        | {
-            monthlyIncome?: number;
-          }
-        | null
-        | undefined) ?? null;
-    const financialProfile =
-      (onboardingState?.financialProfile as
-        | {
-            monthlyIncome?: number;
-            monthlyExpenses?: number;
-            housingCost?: number;
-            loanCount?: number;
-            outstandingLoanTotal?: number;
-          }
-        | null
-        | undefined) ?? null;
-    const monthlyIncome =
-      applicantSummary.monthlyIncome ??
-      employmentProfile?.monthlyIncome ??
-      financialProfile?.monthlyIncome ??
-      null;
-    const baselineExpenses =
-      typeof financialProfile?.monthlyExpenses === 'number'
-        ? financialProfile.monthlyExpenses
-        : typeof financialProfile?.housingCost === 'number'
-          ? financialProfile.housingCost
-          : null;
-    const estimatedExistingDebtLoad =
-      typeof financialProfile?.outstandingLoanTotal === 'number' &&
-      financialProfile.outstandingLoanTotal > 0
-        ? Math.round(
-            Math.max(
-              financialProfile.outstandingLoanTotal / 36,
-              financialProfile.outstandingLoanTotal * 0.035,
-            ),
-          )
-        : null;
-    const monthlyObligationEstimate =
-      obligationContext.monthlyObligationAmount ??
-      (typeof obligationContext.requestedAmount === 'number' &&
-      typeof obligationContext.requestedTermMonths === 'number' &&
-      obligationContext.requestedTermMonths > 0
-        ? Math.round(
-            obligationContext.requestedAmount /
-              obligationContext.requestedTermMonths,
-          )
-        : null);
-    const totalCommittedOutgoings =
-      baselineExpenses == null && estimatedExistingDebtLoad == null
-        ? null
-        : (baselineExpenses ?? 0) + (estimatedExistingDebtLoad ?? 0);
-    const surplusCashEstimate =
-      monthlyIncome == null
-        ? null
-        : Math.round(
-            monthlyIncome -
-              (totalCommittedOutgoings ?? 0) -
-              (monthlyObligationEstimate ?? 0),
-          );
+    return buildUnderwritingAssessment({
+      scoreSnapshot,
+      onboardingState,
+      obligationContext,
+      monthlyIncomeOverride: applicantSummary.monthlyIncome,
+    });
+  }
 
-    const incomeStabilityScore = this.getComponentScore(
-      scoreSnapshot,
-      'income_reliability',
-    );
-    const resilienceScore = this.getComponentScore(
-      scoreSnapshot,
-      'balance_resilience',
-    );
-    const cashFlowStabilityScore = this.getComponentScore(
-      scoreSnapshot,
-      'cash_flow_stability',
-    );
-    const spendingDisciplineScore = this.getComponentScore(
-      scoreSnapshot,
-      'spending_discipline',
-    );
-    const obligationConsistencyScore = this.getComponentScore(
-      scoreSnapshot,
-      'obligation_consistency',
-    );
-    const rawVolatilityScore = this.getComponentScore(
-      scoreSnapshot,
-      'financial_volatility',
-    );
-    const surplusScore =
-      monthlyIncome == null || surplusCashEstimate == null
-        ? null
-        : this.getAffordabilityScoreFromSurplus(
-            surplusCashEstimate,
-            monthlyIncome,
-          );
-    const behaviouralAffordabilityBase = Math.round(
-      ((cashFlowStabilityScore ?? 50) * 0.45) +
-        ((spendingDisciplineScore ?? 50) * 0.25) +
-        ((resilienceScore ?? 50) * 0.3),
-    );
-    const affordabilityScore =
-      surplusScore == null
-        ? behaviouralAffordabilityBase
-        : this.clampScore(
-            Math.round(
-              behaviouralAffordabilityBase * 0.55 + surplusScore * 0.45,
-            ),
-          );
-    const debtPressureRatio =
-      monthlyIncome == null || monthlyIncome <= 0
-        ? null
-        : ((estimatedExistingDebtLoad ?? 0) + (monthlyObligationEstimate ?? 0)) /
-          monthlyIncome;
-    const debtPressureIndicator =
-      obligationConsistencyScore != null && obligationConsistencyScore < 40
-        ? 'High'
-        : debtPressureRatio != null && debtPressureRatio >= 0.45
-          ? 'High'
-          : debtPressureRatio != null && debtPressureRatio >= 0.22
-            ? 'Medium'
-            : typeof financialProfile?.loanCount === 'number' &&
-                financialProfile.loanCount > 2
-              ? 'Medium'
-              : 'Low';
-    const volatilitySignal =
-      rawVolatilityScore != null && rawVolatilityScore >= 65
-        ? 'Volatile'
-        : rawVolatilityScore != null && rawVolatilityScore >= 40
-          ? 'Moderate'
-          : 'Stable';
-    const strengths: string[] = [];
-    const riskFactors: string[] = [];
+  private async getCaseVerificationSnapshot(
+    userId: string,
+    calenId: string,
+  ): Promise<VerificationSnapshotView | null> {
+    try {
+      const latestSnapshot =
+        await this.verifyService.getLatestSnapshotForUser(userId);
 
-    if (affordabilityScore >= 72) {
-      strengths.push('Estimated affordability remains comfortably within range.');
-    }
-    if ((incomeStabilityScore ?? 0) >= 70) {
-      strengths.push('Income patterns appear stable across the observed period.');
-    }
-    if ((resilienceScore ?? 0) >= 70) {
-      strengths.push('Balance behaviour suggests healthy financial headroom.');
-    }
-    if (scoreSnapshot.confidenceLevel === 'high') {
-      strengths.push('Score confidence is high based on the available bank history.');
-    }
+      if (latestSnapshot?.verificationSnapshot) {
+        return latestSnapshot.verificationSnapshot;
+      }
 
-    if (affordabilityScore < 55) {
-      riskFactors.push(
-        'Estimated affordability is tight for the proposed obligation.',
+      const generatedSnapshot =
+        await this.verifyService.generateSnapshotForCalenId(calenId);
+
+      return generatedSnapshot.verificationSnapshot;
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Unknown verification error';
+
+      this.logger.warn(
+        `Unable to attach CALEN Verify snapshot for ${calenId}: ${message}`,
       );
-    }
-    if (debtPressureIndicator === 'High') {
-      riskFactors.push('Debt pressure appears elevated relative to income.');
-    }
-    if (volatilitySignal === 'Volatile') {
-      riskFactors.push('Cash-flow patterns are more volatile than ideal.');
-    }
-    if (scoreSnapshot.confidenceLevel === 'low') {
-      riskFactors.push(
-        'Score confidence is low and requires cautious interpretation.',
-      );
-    }
-    if (
-      scoreSnapshot.anomalyFlags.some((flag) => flag.severity === 'high')
-    ) {
-      riskFactors.push('High-severity anomalies were detected in the score evidence.');
-    }
 
-    if (strengths.length === 0) {
-      strengths.push('Behavioural score evidence is available for review.');
+      return null;
     }
-    if (riskFactors.length === 0) {
-      riskFactors.push('No material behavioural risks were triggered automatically.');
-    }
-
-    return {
-      affordabilityScore,
-      incomeStabilityScore,
-      resilienceScore,
-      debtPressureIndicator,
-      surplusCashEstimate,
-      volatilitySignal,
-      strengths: strengths.slice(0, 4),
-      riskFactors: riskFactors.slice(0, 4),
-      generatedAt: new Date(),
-    };
   }
 
   private buildRecommendation(
@@ -997,6 +802,7 @@ export class UnderwritingService {
     policySnapshot: UnderwritingPolicySnapshotShape,
     underwritingAssessment: UnderwritingAssessmentShape,
     obligationContext: UnderwritingObligationContextShape,
+    verificationSnapshot: VerificationSnapshotView | null,
     decisionRules: WorkspaceDecisionRuleShape[] = [],
   ) {
     const strengths = [...underwritingAssessment.strengths];
@@ -1050,6 +856,39 @@ export class UnderwritingService {
           'The score engine flagged this profile for manual review.',
         );
         policyTriggers.push('score_flagged_for_review');
+        outcome = this.maxOutcome(outcome, 'review');
+      }
+    }
+
+    if (verificationSnapshot) {
+      if (verificationSnapshot.verificationOutcome === 'verified') {
+        strengths.push(
+          'CALEN Verify found strong identity, ownership, and activity signals for this profile.',
+        );
+      }
+
+      if (verificationSnapshot.verificationOutcome === 'verified_with_caution') {
+        riskFactors.push(
+          verificationSnapshot.summary ??
+            'Verification signals are present, but some caution remains before relying on this profile alone.',
+        );
+      }
+
+      if (verificationSnapshot.verificationOutcome === 'unable_to_verify') {
+        manualReviewReasons.push(
+          'Verification signals are not strong enough to rely on this profile without manual review.',
+        );
+        policyTriggers.push('verification_unable_to_verify');
+        outcome = this.maxOutcome(outcome, 'review');
+      } else if (
+        verificationSnapshot.confidenceLevel === 'low' ||
+        verificationSnapshot.ownershipConfidence === 'low' ||
+        verificationSnapshot.dataQuality === 'low'
+      ) {
+        manualReviewReasons.push(
+          'Verification confidence is limited and should be reviewed manually before approval.',
+        );
+        policyTriggers.push('verification_review_required');
         outcome = this.maxOutcome(outcome, 'review');
       }
     }
@@ -1246,6 +1085,7 @@ export class UnderwritingService {
       policySnapshot: underwritingCase.policySnapshot,
       obligationContext: underwritingCase.obligationContext,
       underwritingAssessment: underwritingCase.underwritingAssessment,
+      verificationSnapshot: underwritingCase.verificationSnapshot ?? null,
       recommendation: underwritingCase.recommendation,
       timeline: Array.isArray(underwritingCase.timeline)
         ? underwritingCase.timeline
@@ -1351,35 +1191,6 @@ export class UnderwritingService {
 
   private generateCaseId() {
     return `UW-${randomBytes(4).toString('hex').toUpperCase()}`;
-  }
-
-  private getComponentScore(
-    scoreSnapshot: UnderwritingScoreSnapshotShape,
-    key: string,
-  ) {
-    const component = scoreSnapshot.components.find(
-      (entry) => entry.key === key,
-    );
-
-    return typeof component?.score === 'number' ? component.score : null;
-  }
-
-  private getAffordabilityScoreFromSurplus(
-    surplusCashEstimate: number,
-    monthlyIncome: number,
-  ) {
-    if (monthlyIncome <= 0) {
-      return 0;
-    }
-
-    const surplusRatio = surplusCashEstimate / monthlyIncome;
-
-    if (surplusRatio >= 0.35) return 92;
-    if (surplusRatio >= 0.2) return 78;
-    if (surplusRatio >= 0.1) return 64;
-    if (surplusRatio >= 0) return 48;
-    if (surplusRatio >= -0.1) return 28;
-    return 12;
   }
 
   private getOrganizationDecisionRules(
@@ -1501,10 +1312,6 @@ export class UnderwritingService {
     return Array.from(
       new Set(values.map((value) => value.trim()).filter(Boolean)),
     );
-  }
-
-  private clampScore(value: number, min = 0, max = 100) {
-    return Math.max(min, Math.min(max, value));
   }
 
   private toObjectId(value: string) {

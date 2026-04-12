@@ -16,6 +16,7 @@ import {
   UserSettingsDocument,
 } from '../dashboard/schemas/user-settings.schema';
 import { OrganizationsService } from '../organizations/organizations.service';
+import { PassportAccessService } from '../passport/passport-access.service';
 import {
   OrganizationInvitation,
   OrganizationInvitationDocument,
@@ -46,6 +47,10 @@ import { UpdateOrgPipelineStageDto } from './dto/update-org-pipeline-stage.dto';
 import { UpdateOrgDashboardSettingsDto } from './dto/update-org-dashboard-settings.dto';
 import { UpdateOrgLendingOfferDto } from './dto/update-org-lending-offer.dto';
 import {
+  MonitoringWebhookDelivery,
+  MonitoringWebhookDeliveryDocument,
+} from '../monitoring/schemas/monitoring-webhook-delivery.schema';
+import {
   type OrgWorkspaceData,
   type WorkspaceApplicant,
   type WorkspaceDecisionRule,
@@ -54,6 +59,13 @@ import {
   OrganizationPipelineApplicant,
   OrganizationPipelineApplicantDocument,
 } from './schemas/organization-pipeline-applicant.schema';
+import {
+  buildUnderwritingAssessment,
+  buildUnderwritingScoreSnapshot,
+  getUnderwritingComponentScore,
+  UNDERWRITING_DECISION_FIELDS,
+  type UnderwritingAssessmentShape,
+} from '../underwriting/underwriting-shared';
 
 type OrganizationSettingsShape = {
   name: string;
@@ -74,26 +86,17 @@ type OrganizationSettingsShape = {
 
 type LatestScorePayload = Awaited<ReturnType<ScoresService['getLatestScore']>>;
 
-type OrgAssessmentShape = {
-  affordabilityScore: number | null;
-  incomeStabilityScore: number | null;
-  resilienceScore: number | null;
+type OrgAssessmentShape = UnderwritingAssessmentShape & {
   cashFlowStabilityScore: number | null;
   spendingDisciplineScore: number | null;
   confidenceScore: number | null;
   confidenceLevel: string | null;
-  debtPressureIndicator: 'Low' | 'Medium' | 'High';
-  surplusCashEstimate: number | null;
-  volatilitySignal: 'Stable' | 'Moderate' | 'Volatile';
-  strengths: string[];
-  riskFactors: string[];
   scoreStatus: string;
   anomalyFlags: Array<{
     code: string;
     severity: string;
     detail?: string;
   }>;
-  generatedAt: Date;
 };
 
 type OrgDecisionSimulationCandidate = {
@@ -115,39 +118,6 @@ type OrgDecisionSimulationCandidate = {
   riskFactors: string[];
 };
 
-const ORG_DECISION_FIELDS = [
-  {
-    label: 'CALEN Score',
-    description: 'Overall behavioural score from the latest scoring run.',
-    unit: 'score',
-  },
-  {
-    label: 'Affordability Score',
-    description: 'Estimated capacity to carry additional obligations.',
-    unit: 'score',
-  },
-  {
-    label: 'Income Stability',
-    description: 'Consistency of inflows across the observed period.',
-    unit: 'score',
-  },
-  {
-    label: 'Resilience Score',
-    description: 'Balance and liquidity resilience from recent account history.',
-    unit: 'score',
-  },
-  {
-    label: 'Confidence Score',
-    description: 'Confidence in the score based on data depth and quality.',
-    unit: 'score',
-  },
-  {
-    label: 'Surplus Cash',
-    description: 'Estimated monthly headroom after core expenses.',
-    unit: 'currency',
-  },
-] as const;
-
 const EMPTY_WORKSPACE_DATA: OrgWorkspaceData = {
   applicants: [],
   decisionRules: [],
@@ -168,12 +138,15 @@ const SEEDED_PIPELINE_APPLICANT_IDS = new Set([
   'APP-4886',
 ]);
 
+const DEFAULT_WEBHOOK_SUBSCRIPTIONS = ['monitoring_alert_triggered'];
+
 @Injectable()
 export class OrgDashboardService {
   constructor(
     private readonly accountsService: AccountsService,
     private readonly organizationsService: OrganizationsService,
     private readonly scoresService: ScoresService,
+    private readonly passportAccessService: PassportAccessService,
     @InjectModel(Notification.name)
     private readonly notificationModel: Model<NotificationDocument>,
     @InjectModel(UserSettings.name)
@@ -190,6 +163,8 @@ export class OrgDashboardService {
     private readonly bankConnectionModel: Model<BankConnectionDocument>,
     @InjectModel(TrustContact.name)
     private readonly trustContactModel: Model<TrustContactDocument>,
+    @InjectModel(MonitoringWebhookDelivery.name)
+    private readonly monitoringWebhookDeliveryModel: Model<MonitoringWebhookDeliveryDocument>,
   ) {}
 
   async getDashboard(user: AuthenticatedUser) {
@@ -418,7 +393,11 @@ export class OrgDashboardService {
       };
     }
 
-    const account = await this.accountsService.findIndividualByShareId(calenId);
+    const account =
+      await this.passportAccessService.findAccessibleIndividualByShareId(
+        user,
+        calenId,
+      );
 
     if (!account) {
       return {
@@ -633,7 +612,10 @@ export class OrgDashboardService {
 
     const [organization, account] = await Promise.all([
       this.organizationsService.findByIdOrThrow(user.organizationId!),
-      this.accountsService.findIndividualByShareId(calenId),
+      this.passportAccessService.findAccessibleIndividualByShareId(
+        user,
+        calenId,
+      ),
     ]);
 
     if (!account) {
@@ -715,7 +697,11 @@ export class OrgDashboardService {
       };
     }
 
-    const account = await this.accountsService.findIndividualByShareId(calenId);
+    const account =
+      await this.passportAccessService.findAccessibleIndividualByShareId(
+        user,
+        calenId,
+      );
 
     if (!account) {
       return {
@@ -858,9 +844,17 @@ export class OrgDashboardService {
       user.organizationId!,
     );
     const apiKeys = await this.getStoredApiKeys(organization);
+    const webhookDeliveries = await this.monitoringWebhookDeliveryModel
+      .find({ organizationId: this.toObjectId(user.organizationId!) })
+      .sort({ attemptedAt: -1 })
+      .limit(12);
 
     return {
-      apiIntegrations: this.buildApiIntegrationsPayload(apiKeys),
+      apiIntegrations: this.buildApiIntegrationsPayload(
+        apiKeys,
+        organization,
+        webhookDeliveries,
+      ),
     };
   }
 
@@ -1052,6 +1046,21 @@ export class OrgDashboardService {
             : 'sandbox',
         enableApiAccess: Boolean(integrationPreferences.enableApiAccess),
         enableWebhooks: Boolean(integrationPreferences.enableWebhooks),
+        webhookUrl:
+          typeof integrationPreferences.webhookUrl === 'string'
+            ? integrationPreferences.webhookUrl
+            : '',
+        webhookSecretConfigured:
+          typeof integrationPreferences.webhookSecret === 'string' &&
+          integrationPreferences.webhookSecret.length > 0,
+        webhookSubscriptions: Array.isArray(
+          integrationPreferences.webhookSubscriptions,
+        )
+          ? integrationPreferences.webhookSubscriptions.filter(
+              (value): value is string =>
+                typeof value === 'string' && value.length > 0,
+            )
+          : DEFAULT_WEBHOOK_SUBSCRIPTIONS,
         enabledProducts: Array.isArray(integrationPreferences.enabledProducts)
           ? integrationPreferences.enabledProducts
           : [],
@@ -1658,7 +1667,7 @@ export class OrgDashboardService {
         'Rules Applied',
         'Decision Proposed',
       ],
-      availableFields: ORG_DECISION_FIELDS,
+      availableFields: UNDERWRITING_DECISION_FIELDS,
       rules,
       simulationProfile: candidate
         ? {
@@ -1835,196 +1844,33 @@ export class OrgDashboardService {
     onboardingState: OnboardingStateDocument | null;
     latestScore: LatestScorePayload | null;
   }): OrgAssessmentShape {
-    const financialProfile =
-      (input.onboardingState?.financialProfile as
-        | {
-            monthlyIncome?: number;
-            monthlyExpenses?: number;
-            savingsBalance?: number;
-            outstandingLoanTotal?: number;
-            loanCount?: number;
-          }
-        | null
-        | undefined) ?? null;
-    const employmentProfile =
-      (input.onboardingState?.employmentProfile as
-        | {
-            monthlyIncome?: number;
-            yearsEmployed?: number;
-            employmentType?: string;
-          }
-        | null
-        | undefined) ?? null;
-    const monthlyIncome =
-      employmentProfile?.monthlyIncome ??
-      financialProfile?.monthlyIncome ??
-      null;
-    const monthlyExpenses =
-      typeof financialProfile?.monthlyExpenses === 'number'
-        ? financialProfile.monthlyExpenses
-        : null;
-    const savingsBalance =
-      typeof financialProfile?.savingsBalance === 'number'
-        ? financialProfile.savingsBalance
-        : null;
-    const outstandingLoanTotal =
-      typeof financialProfile?.outstandingLoanTotal === 'number'
-        ? financialProfile.outstandingLoanTotal
-        : null;
-    const surplusCashEstimate =
-      monthlyIncome == null
-        ? null
-        : Math.round(monthlyIncome - (monthlyExpenses ?? 0));
-    const incomeStabilityScore =
-      this.getScoreComponentScore(input.latestScore, 'income_reliability') ??
-      this.clampPercentage(
-        40 +
-          Math.min((employmentProfile?.yearsEmployed ?? 0) * 10, 30) +
-          (monthlyIncome != null && monthlyIncome >= 350000
-            ? 20
-            : monthlyIncome != null && monthlyIncome >= 150000
-              ? 10
-              : 0) +
-          (employmentProfile?.employmentType === 'full_time' ? 10 : 0),
-      );
-    const resilienceScore =
-      this.getScoreComponentScore(input.latestScore, 'balance_resilience') ??
-      this.clampPercentage(
-        monthlyExpenses != null && monthlyExpenses > 0
-          ? ((savingsBalance ?? 0) / monthlyExpenses) * 25
-          : (savingsBalance ?? 0) > 0
-            ? 65
-            : 20,
-      );
-    const cashFlowStabilityScore =
-      this.getScoreComponentScore(input.latestScore, 'cash_flow_stability') ??
-      this.clampPercentage(
-        monthlyIncome != null && monthlyIncome > 0
-          ? 50 + (((monthlyIncome - (monthlyExpenses ?? 0)) / monthlyIncome) * 50)
-          : 30,
-      );
-    const spendingDisciplineScore =
-      this.getScoreComponentScore(input.latestScore, 'spending_discipline') ??
-      this.clampPercentage(
-        monthlyIncome != null && monthlyIncome > 0 && monthlyExpenses != null
-          ? 100 - Math.min(80, (monthlyExpenses / monthlyIncome) * 100)
-          : 45,
-      );
-    const confidenceScore =
-      typeof input.latestScore?.confidence?.score === 'number'
-        ? input.latestScore.confidence.score
-        : null;
-    const confidenceLevel =
-      typeof input.latestScore?.confidence?.level === 'string'
-        ? input.latestScore.confidence.level
-        : null;
-    const behaviouralAffordabilityBase = this.clampPercentage(
-      Math.round(
-        ((cashFlowStabilityScore ?? 50) * 0.45) +
-          ((spendingDisciplineScore ?? 50) * 0.25) +
-          ((resilienceScore ?? 50) * 0.3),
-      ),
-    );
-    const affordabilityScore =
-      monthlyIncome == null || surplusCashEstimate == null
-        ? behaviouralAffordabilityBase
-        : this.clampPercentage(
-            Math.round(
-              behaviouralAffordabilityBase * 0.55 +
-                this.getAffordabilityScoreFromSurplus(
-                  surplusCashEstimate,
-                  monthlyIncome,
-                ) *
-                  0.45,
-            ),
-          );
-    const debtPressureRatio =
-      monthlyIncome == null || monthlyIncome <= 0
-        ? null
-        : ((outstandingLoanTotal ?? 0) / 12) / monthlyIncome;
-    const obligationConsistencyScore = this.getScoreComponentScore(
-      input.latestScore,
-      'obligation_consistency',
-    );
-    const rawVolatilityScore = this.getScoreComponentScore(
-      input.latestScore,
-      'financial_volatility',
-    );
-    const debtPressureIndicator =
-      obligationConsistencyScore != null && obligationConsistencyScore < 40
-        ? 'High'
-        : debtPressureRatio != null && debtPressureRatio >= 0.45
-          ? 'High'
-          : debtPressureRatio != null && debtPressureRatio >= 0.22
-            ? 'Medium'
-            : typeof financialProfile?.loanCount === 'number' &&
-                financialProfile.loanCount > 2
-              ? 'Medium'
-              : 'Low';
-    const volatilitySignal =
-      rawVolatilityScore != null && rawVolatilityScore >= 65
-        ? 'Volatile'
-        : rawVolatilityScore != null && rawVolatilityScore >= 40
-          ? 'Moderate'
-          : 'Stable';
-    const strengths: string[] = [];
-    const riskFactors: string[] = [];
-
-    if (affordabilityScore >= 72) {
-      strengths.push('Estimated monthly headroom remains comfortably positive.');
-    }
-    if ((incomeStabilityScore ?? 0) >= 70) {
-      strengths.push('Income patterns appear stable across the observed period.');
-    }
-    if ((resilienceScore ?? 0) >= 70) {
-      strengths.push('Balance behaviour suggests healthy financial resilience.');
-    }
-    if (confidenceLevel === 'high') {
-      strengths.push('Score confidence is high based on the available bank history.');
-    }
-
-    if (affordabilityScore < 55) {
-      riskFactors.push('Estimated monthly headroom is tight relative to expenses.');
-    }
-    if (debtPressureIndicator === 'High') {
-      riskFactors.push('Debt pressure appears elevated relative to available income.');
-    }
-    if (volatilitySignal === 'Volatile') {
-      riskFactors.push('Cash-flow patterns are more volatile than ideal.');
-    }
-    if (confidenceLevel === 'low') {
-      riskFactors.push('Score confidence is low and should be treated cautiously.');
-    }
-    if (
-      input.latestScore?.anomalyFlags.some((flag) => flag.severity === 'high')
-    ) {
-      riskFactors.push('High-severity anomalies were detected in the score evidence.');
-    }
+    const scoreSnapshot = buildUnderwritingScoreSnapshot(input.latestScore);
+    const sharedAssessment = buildUnderwritingAssessment({
+      scoreSnapshot,
+      onboardingState: input.onboardingState,
+      obligationContext: {
+        requestedAmount: null,
+        requestedTermMonths: null,
+        monthlyObligationAmount: null,
+        productCategory: null,
+        decisionPurpose: null,
+      },
+    });
 
     return {
-      affordabilityScore,
-      incomeStabilityScore,
-      resilienceScore,
-      cashFlowStabilityScore,
-      spendingDisciplineScore,
-      confidenceScore,
-      confidenceLevel,
-      debtPressureIndicator,
-      surplusCashEstimate,
-      volatilitySignal,
-      strengths:
-        strengths.length > 0
-          ? strengths.slice(0, 4)
-          : ['Behavioural score evidence is available for review.'],
-      riskFactors:
-        riskFactors.length > 0
-          ? riskFactors.slice(0, 4)
-          : ['No material behavioural risks were triggered automatically.'],
-      scoreStatus: input.latestScore?.status ?? 'unavailable',
-      anomalyFlags: Array.isArray(input.latestScore?.anomalyFlags)
-        ? input.latestScore.anomalyFlags
-        : [],
-      generatedAt: new Date(),
+      ...sharedAssessment,
+      cashFlowStabilityScore: getUnderwritingComponentScore(
+        scoreSnapshot,
+        'cash_flow_stability',
+      ),
+      spendingDisciplineScore: getUnderwritingComponentScore(
+        scoreSnapshot,
+        'spending_discipline',
+      ),
+      confidenceScore: scoreSnapshot.confidenceScore,
+      confidenceLevel: scoreSnapshot.confidenceLevel,
+      scoreStatus: input.latestScore?.status ?? scoreSnapshot.status,
+      anomalyFlags: scoreSnapshot.anomalyFlags,
     };
   }
 
@@ -2088,32 +1934,6 @@ export class OrgDashboardService {
     }
 
     return 'Low';
-  }
-
-  private getScoreComponentScore(
-    latestScore: LatestScorePayload | null,
-    key: string,
-  ) {
-    const component = latestScore?.components.find((entry) => entry.key === key);
-    return typeof component?.score === 'number' ? component.score : null;
-  }
-
-  private getAffordabilityScoreFromSurplus(
-    surplusCashEstimate: number,
-    monthlyIncome: number,
-  ) {
-    if (monthlyIncome <= 0) {
-      return 0;
-    }
-
-    const surplusRatio = surplusCashEstimate / monthlyIncome;
-
-    if (surplusRatio >= 0.35) return 92;
-    if (surplusRatio >= 0.2) return 78;
-    if (surplusRatio >= 0.1) return 64;
-    if (surplusRatio >= 0) return 48;
-    if (surplusRatio >= -0.1) return 28;
-    return 12;
   }
 
   private buildTrustSignalsPayload(applicants: WorkspaceApplicant[]) {
@@ -2843,11 +2663,46 @@ export class OrgDashboardService {
 
   private buildApiIntegrationsPayload(
     apiKeys: OrgWorkspaceData['apiKeys'],
+    organization?: OrganizationSettingsShape,
+    webhookDeliveries: MonitoringWebhookDeliveryDocument[] = [],
   ) {
+    const integrationPreferences = organization
+      ? this.getIntegrationPreferences(organization)
+      : {};
+    const webhookSubscriptions = Array.isArray(
+      integrationPreferences.webhookSubscriptions,
+    )
+      ? integrationPreferences.webhookSubscriptions.filter(
+          (value): value is string => typeof value === 'string' && value.length > 0,
+        )
+      : DEFAULT_WEBHOOK_SUBSCRIPTIONS;
+
     return {
       apiKeys,
       usageData: [],
       recentLogs: [],
+      webhooks: {
+        enabled: Boolean(integrationPreferences.enableWebhooks),
+        url:
+          typeof integrationPreferences.webhookUrl === 'string'
+            ? integrationPreferences.webhookUrl
+            : null,
+        secretConfigured:
+          typeof integrationPreferences.webhookSecret === 'string' &&
+          integrationPreferences.webhookSecret.length > 0,
+        subscriptions: webhookSubscriptions,
+        recentDeliveries: webhookDeliveries.map((delivery) => ({
+          id: String(delivery._id),
+          deliveryId: delivery.deliveryId,
+          eventType: delivery.eventType,
+          targetUrl: delivery.targetUrl,
+          status: delivery.status,
+          responseStatus: delivery.responseStatus ?? null,
+          errorMessage: delivery.errorMessage ?? null,
+          attemptedAt: delivery.attemptedAt,
+          deliveredAt: delivery.deliveredAt ?? null,
+        })),
+      },
     };
   }
 

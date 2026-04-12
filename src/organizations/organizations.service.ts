@@ -87,6 +87,33 @@ export class OrganizationsService {
     return organization;
   }
 
+  async findBySlugOrThrow(slug: string): Promise<OrganizationDocument> {
+    const organization = await this.organizationModel
+      .findOne({ slug: slug.trim().toLowerCase() })
+      .exec();
+
+    if (!organization) {
+      throw new NotFoundException({
+        code: 'ORGANIZATION_NOT_FOUND',
+        message: 'Organization was not found',
+      });
+    }
+
+    return organization;
+  }
+
+  async findByIdOrSlugOrThrow(
+    organizationKey: string,
+  ): Promise<OrganizationDocument> {
+    const normalizedKey = organizationKey.trim();
+
+    if (Types.ObjectId.isValid(normalizedKey)) {
+      return this.findByIdOrThrow(normalizedKey);
+    }
+
+    return this.findBySlugOrThrow(normalizedKey);
+  }
+
   async updateOrganizationProfile(
     organizationId: string,
     updates: Partial<CreateOrganizationInput>,

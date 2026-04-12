@@ -6,11 +6,14 @@ import { AuthModule } from './auth/auth.module';
 import { validateEnvironment } from './config/env.validation';
 import { DatabaseModule } from './database/database.module';
 import { DashboardModule } from './dashboard/dashboard.module';
+import { MonitoringModule } from './monitoring/monitoring.module';
 import { OnboardingModule } from './onboarding/onboarding.module';
 import { OrgDashboardModule } from './org-dashboard/org-dashboard.module';
 import { OrgOnboardingModule } from './org-onboarding/org-onboarding.module';
+import { PassportModule } from './passport/passport.module';
 import { ScoresModule } from './scores/scores.module';
 import { UnderwritingModule } from './underwriting/underwriting.module';
+import { VerifyModule } from './verify/verify.module';
 
 const shouldConnectDatabase = process.env.NODE_ENV !== 'test';
 
@@ -25,15 +28,18 @@ const shouldConnectDatabase = process.env.NODE_ENV !== 'test';
     ...(shouldConnectDatabase
       ? [
           DatabaseModule,
+          DashboardModule,
+          MonitoringModule,
           AuthModule,
           ScoresModule,
           OnboardingModule,
           OrgOnboardingModule,
           OrgDashboardModule,
+          PassportModule,
           UnderwritingModule,
+          VerifyModule,
         ]
       : []),
-    ...(shouldConnectDatabase ? [DashboardModule] : []),
   ],
   controllers: [AppController],
   providers: [AppService],
