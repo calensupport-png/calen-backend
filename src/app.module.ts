@@ -14,6 +14,7 @@ import { PassportModule } from './passport/passport.module';
 import { ScoresModule } from './scores/scores.module';
 import { UnderwritingModule } from './underwriting/underwriting.module';
 import { VerifyModule } from './verify/verify.module';
+import { WaitlistModule } from './waitlist/waitlist.module';
 
 const shouldConnectDatabase = process.env.NODE_ENV !== 'test';
 
@@ -38,6 +39,7 @@ const shouldConnectDatabase = process.env.NODE_ENV !== 'test';
           PassportModule,
           UnderwritingModule,
           VerifyModule,
+          WaitlistModule,
         ]
       : []),
   ],
