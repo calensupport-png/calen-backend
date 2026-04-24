@@ -1,5 +1,8 @@
 import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
+import { AccountsModule } from '../accounts/accounts.module';
+import { AuthModule } from '../auth/auth.module';
+import { AdminWaitlistController } from './admin-waitlist.controller';
 import { WaitlistController } from './waitlist.controller';
 import {
   WaitlistSubmission,
@@ -9,6 +12,8 @@ import { WaitlistService } from './waitlist.service';
 
 @Module({
   imports: [
+    AccountsModule,
+    AuthModule,
     MongooseModule.forFeature([
       {
         name: WaitlistSubmission.name,
@@ -16,7 +21,7 @@ import { WaitlistService } from './waitlist.service';
       },
     ]),
   ],
-  controllers: [WaitlistController],
+  controllers: [WaitlistController, AdminWaitlistController],
   providers: [WaitlistService],
   exports: [WaitlistService],
 })

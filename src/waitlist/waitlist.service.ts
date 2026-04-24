@@ -1,7 +1,11 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { randomBytes } from 'crypto';
 import { Model } from 'mongoose';
+import {
+  AdminWaitlistAudienceFilter,
+  AdminWaitlistQueryDto,
+} from './dto/admin-waitlist-query.dto';
 import {
   IndividualWaitlistDto,
   OrganisationWaitlistDto,
@@ -33,12 +37,76 @@ type WaitlistPersistenceShape = {
   data: Record<string, unknown>;
 };
 
+type AdminWaitlistStats = {
+  totalSubmissions: number;
+  individualSubmissions: number;
+  organisationSubmissions: number;
+  submissionsToday: number;
+  betaInterestedIndividuals: number;
+  pilotReadyOrganizations: number;
+};
+
 @Injectable()
 export class WaitlistService {
   constructor(
     @InjectModel(WaitlistSubmission.name)
     private readonly waitlistSubmissionModel: Model<WaitlistSubmissionDocument>,
   ) {}
+
+  async getAdminWaitlist(query: AdminWaitlistQueryDto) {
+    const page = query.page ?? 1;
+    const pageSize = query.pageSize ?? 12;
+    const search = query.search?.trim() ?? '';
+    const audience = query.audience ?? 'all';
+    const filter = this.buildAdminWaitlistFilter(audience, search);
+    const skip = (page - 1) * pageSize;
+
+    const [totalResults, submissions, stats] = await Promise.all([
+      this.waitlistSubmissionModel.countDocuments(filter),
+      this.waitlistSubmissionModel
+        .find(filter)
+        .sort({ lastSubmittedAt: -1, createdAt: -1 })
+        .skip(skip)
+        .limit(pageSize)
+        .lean()
+        .exec(),
+      this.getAdminWaitlistStats(),
+    ]);
+
+    return {
+      stats,
+      filters: {
+        audience,
+        search,
+        page,
+        pageSize,
+        totalPages: Math.max(1, Math.ceil(totalResults / pageSize)),
+        totalResults,
+      },
+      submissions: submissions.map((submission) =>
+        this.mapAdminWaitlistSubmission(submission),
+      ),
+    };
+  }
+
+  async getAdminWaitlistSubmission(submissionId: string) {
+    const normalizedSubmissionId = submissionId.trim().toUpperCase();
+    const submission = await this.waitlistSubmissionModel
+      .findOne({
+        submissionId: normalizedSubmissionId,
+      })
+      .lean()
+      .exec();
+
+    if (!submission) {
+      throw new NotFoundException({
+        code: 'WAITLIST_SUBMISSION_NOT_FOUND',
+        message: 'Waitlist submission was not found',
+      });
+    }
+
+    return this.mapAdminWaitlistSubmission(submission);
+  }
 
   async submit(
     dto: SubmitWaitlistDto,
@@ -163,6 +231,112 @@ export class WaitlistService {
     return `WL-${randomBytes(4).toString('hex').toUpperCase()}`;
   }
 
+  private buildAdminWaitlistFilter(
+    audience: AdminWaitlistAudienceFilter,
+    search: string,
+  ): Record<string, unknown> {
+    const filter: Record<string, unknown> = {};
+
+    if (audience !== 'all') {
+      filter.audience = audience;
+    }
+
+    if (!search) {
+      return filter;
+    }
+
+    const escapedSearch = this.escapeRegex(search);
+    const regex = new RegExp(escapedSearch, 'i');
+
+    filter.$or = [
+      { submissionId: regex },
+      { fullName: regex },
+      { email: regex },
+      { organizationName: regex },
+      { country: regex },
+    ];
+
+    return filter;
+  }
+
+  private async getAdminWaitlistStats(): Promise<AdminWaitlistStats> {
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+
+    const [
+      totalSubmissions,
+      individualSubmissions,
+      organisationSubmissions,
+      submissionsToday,
+      betaInterestedIndividuals,
+      pilotReadyOrganizations,
+    ] = await Promise.all([
+      this.waitlistSubmissionModel.countDocuments(),
+      this.waitlistSubmissionModel.countDocuments({
+        audience: WaitlistAudience.INDIVIDUAL,
+      }),
+      this.waitlistSubmissionModel.countDocuments({
+        audience: WaitlistAudience.ORGANISATION,
+      }),
+      this.waitlistSubmissionModel.countDocuments({
+        lastSubmittedAt: { $gte: startOfToday },
+      }),
+      this.waitlistSubmissionModel.countDocuments({
+        audience: WaitlistAudience.INDIVIDUAL,
+        'data.wantsBeta': true,
+      }),
+      this.waitlistSubmissionModel.countDocuments({
+        audience: WaitlistAudience.ORGANISATION,
+        'data.wouldJoinPilot': { $in: ['yes', 'Yes', 'YES', true] },
+      }),
+    ]);
+
+    return {
+      totalSubmissions,
+      individualSubmissions,
+      organisationSubmissions,
+      submissionsToday,
+      betaInterestedIndividuals,
+      pilotReadyOrganizations,
+    };
+  }
+
+  private mapAdminWaitlistSubmission(
+    submission: WaitlistSubmission,
+  ): Record<string, unknown> {
+    const data = submission.data ?? {};
+
+    return {
+      submissionId: submission.submissionId,
+      audience: submission.audience,
+      fullName: submission.fullName,
+      email: submission.email,
+      country: submission.country ?? null,
+      phoneNumber: submission.phoneNumber ?? null,
+      organizationName: submission.organizationName ?? null,
+      organizationType: submission.organizationType ?? null,
+      referralCode: submission.referralCode ?? null,
+      submissionPath: submission.submissionPath ?? null,
+      submissionCount: submission.submissionCount,
+      firstSubmittedAt: submission.firstSubmittedAt,
+      lastSubmittedAt: submission.lastSubmittedAt,
+      createdAt: submission.createdAt ?? null,
+      updatedAt: submission.updatedAt ?? null,
+      flags: {
+        wantsBeta: data.wantsBeta === true,
+        wantsPilot: this.isAffirmative(data.wouldJoinPilot),
+      },
+      requestMetadata: {
+        requestId: submission.requestMetadata?.requestId ?? null,
+        ipAddress: submission.requestMetadata?.ipAddress ?? null,
+        userAgent: submission.requestMetadata?.userAgent ?? null,
+        referer: submission.requestMetadata?.referer ?? null,
+        origin: submission.requestMetadata?.origin ?? null,
+      },
+      data,
+    };
+  }
+
   private normalizeNullableString(value?: string | null): string | null {
     if (!value) {
       return null;
@@ -170,5 +344,21 @@ export class WaitlistService {
 
     const normalized = value.trim();
     return normalized.length > 0 ? normalized : null;
+  }
+
+  private isAffirmative(value: unknown): boolean {
+    if (value === true) {
+      return true;
+    }
+
+    if (typeof value !== 'string') {
+      return false;
+    }
+
+    return ['yes', 'y', 'true', 'pilot'].includes(value.trim().toLowerCase());
+  }
+
+  private escapeRegex(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 }

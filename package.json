@@ -6,6 +6,7 @@
   "private": true,
   "license": "UNLICENSED",
   "scripts": {
+    "admin:create": "ts-node ./scripts/create-admin.ts",
     "build": "nest build",
     "db:down": "bash ./scripts/db.sh down",
     "db:logs": "bash ./scripts/db.sh logs",

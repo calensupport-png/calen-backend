@@ -78,6 +78,18 @@ export class AuthController {
     });
   }
 
+  @Post('login-admin')
+  @ApiOperation({ summary: 'Login (admin account)' })
+  @ApiBody({ type: LoginDto })
+  @ApiOkResponse({ type: AuthResponseDto })
+  loginAdmin(@Body() dto: LoginDto, @Req() req: AuthenticatedRequest) {
+    return this.authService.login(dto, AccountType.ADMIN, {
+      requestId: req.requestId,
+      ipAddress: req.ip,
+      userAgent: req.header('user-agent'),
+    });
+  }
+
   @Post('verify-email')
   @ApiOperation({ summary: 'Verify a user email address' })
   @ApiBody({ type: VerifyEmailDto })

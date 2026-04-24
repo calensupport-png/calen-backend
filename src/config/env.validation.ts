@@ -70,7 +70,9 @@ export function validateEnvironment(
     );
   }
 
-  const mongodbUri = String(config.MONGODB_URI ?? DEFAULTS.MONGODB_URI).trim();
+  const mongodbUri = String(
+    config.MONGODB_URI ?? config.MONGO_URI ?? DEFAULTS.MONGODB_URI,
+  ).trim();
   if (!mongodbUri) {
     throw new Error('MONGODB_URI is required');
   }

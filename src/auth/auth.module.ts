@@ -11,6 +11,7 @@ import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { JwtAuthGuard } from './jwt-auth.guard';
 import { PasswordService } from './password.service';
+import { RolesGuard } from './roles.guard';
 import { AuthToken, AuthTokenSchema } from './schemas/auth-token.schema';
 import { Session, SessionSchema } from './schemas/session.schema';
 
@@ -39,7 +40,13 @@ import { Session, SessionSchema } from './schemas/session.schema';
     ]),
   ],
   controllers: [AuthController],
-  providers: [AuthService, PasswordService, JwtAuthGuard],
-  exports: [AuthService, PasswordService, JwtAuthGuard, JwtModule],
+  providers: [AuthService, PasswordService, JwtAuthGuard, RolesGuard],
+  exports: [
+    AuthService,
+    PasswordService,
+    JwtAuthGuard,
+    RolesGuard,
+    JwtModule,
+  ],
 })
 export class AuthModule {}
